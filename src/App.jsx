@@ -1,383 +1,351 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  AreaChart, Area, ComposedChart, Bar, ReferenceLine
 } from 'recharts';
-import { Settings, Activity, TrendingUp, Zap, BarChart3, PieChart, Layers, Globe } from 'lucide-react';
+import {
+  Globe, Settings, Activity, TrendingUp, Layers, RefreshCw,
+  ChevronRight, Info, Database, TrendingDown, Layout
+} from 'lucide-react';
 
-// --- Economic Constants & Helper Functions ---
+// --- MATH ENGINE (Direct Translation from MATLAB logic) ---
 
 const get_y = (k, bt, rho, gamma, A, L) => {
-  const task_agg = Math.max(1e-9, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
+  const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
   return A * Math.pow(k, gamma) * Math.pow(task_agg, (1 - gamma) / rho);
 };
 
 const get_r = (k, bt, rho, gamma, A, L, delta) => {
-  const task_agg = Math.max(1e-9, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
+  if (k <= 1e-10) return 0.5;
+  const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
   const y = get_y(k, bt, rho, gamma, A, L);
   const mpk = (gamma + (1 - gamma) * (Math.pow(bt, 1 - rho) * Math.pow(k, rho)) / task_agg) * (y / k);
   return mpk - delta;
 };
 
-const distribute_K = (K_tot, btA, btB, rho, gamma, delta, LA, LB, AA, AB, wA, wB, VA_target) => {
-  const ka0 = VA_target;
-  const kb0 = K_tot - ka0;
-  const ra0 = get_r(ka0, btA, rho, gamma, AA, LA, delta);
-  const rb0 = get_r(kb0, btB, rho, gamma, AB, LB, delta);
-
-  let ka_final = ka0;
-  if (ra0 - rb0 > wB) {
-    let low = 0.0001 * K_tot, high = 0.9999 * K_tot;
-    for (let i = 0; i < 40; i++) {
-      let mid = (low + high) / 2;
-      let ra = get_r(mid, btA, rho, gamma, AA, LA, delta);
-      let rb = get_r(K_tot - mid, btB, rho, gamma, AB, LB, delta);
-      if (ra > rb + wB) low = mid; else high = mid;
-    }
-    ka_final = (low + high) / 2;
-  } else if (rb0 - ra0 > wA) {
-    let low = 0.0001 * K_tot, high = 0.9999 * K_tot;
-    for (let i = 0; i < 40; i++) {
-      let mid = (low + high) / 2;
-      let ra = get_r(mid, btA, rho, gamma, AA, LA, delta);
-      let rb = get_r(K_tot - mid, btB, rho, gamma, AB, LB, delta);
-      if (rb > ra + wA) high = mid; else low = mid;
-    }
-    ka_final = (low + high) / 2;
+const solve_ki_for_r = (r_target, bt, delta, A, L, gamma, rho) => {
+  let low = 1e-12, high = 1e12;
+  const f = (k) => get_r(k, bt, rho, gamma, A, L, delta) - r_target;
+  if (f(low) < 0) return low;
+  if (f(high) > 0) return high;
+  for (let i = 0; i < 60; i++) {
+    let mid = Math.exp((Math.log(low) + Math.log(high)) / 2);
+    if (f(mid) > 0) low = mid;
+    else high = mid;
   }
-  const ra = get_r(ka_final, btA, rho, gamma, AA, LA, delta);
-  const rb = get_r(K_tot - ka_final, btB, rho, gamma, AB, LB, delta);
-  return { ka: ka_final, kb: K_tot - ka_final, ra, rb };
+  return (low + high) / 2;
 };
 
+const solve_global_market = (V_tot, bt_vec, delta, A_vec, L_vec, gamma, rho) => {
+  const n = bt_vec.length;
+  const obj_r = (r_test) => {
+    let total_k = 0;
+    for (let i = 0; i < n; i++) {
+      total_k += solve_ki_for_r(r_test, bt_vec[i], delta, A_vec[i], L_vec[i], gamma, rho);
+    }
+    return total_k - V_tot;
+  };
+
+  let low = -0.0499, high = 10.0;
+  for (let i = 0; i < 60; i++) {
+    let mid = (low + high) / 2;
+    if (obj_r(mid) > 0) low = mid;
+    else high = mid;
+  }
+  const r_star = (low + high) / 2;
+  return bt_vec.map((_, i) => solve_ki_for_r(r_star, bt_vec[i], delta, A_vec[i], L_vec[i], gamma, rho));
+};
+
+const SCENARIOS = [
+  { id: 'hype', name: 'Scenario 1: Hype Cycle' },
+  { id: 'tidal', name: 'Scenario 2: Tidal Flow' },
+  { id: 'logjam', name: 'Scenario 3: Logjam' },
+  { id: 'gulf', name: 'Scenario 4: The Gulf' }
+];
+
 const App = () => {
+  const [mode, setMode] = useState('3C'); 
+  const [activeScenario, setActiveScenario] = useState('tidal');
   const [params, setParams] = useState({
-    A0_A: 1.25,
     sigma: 0.4,
     delta: 0.05,
-    phi: 0.8,
-    l: 3,
-    lag: 10,
+    phi: 0.25,
+    gamma: 0.33,
     r_target: 0.04,
-    g_A: 0.00,
-    g_B: 0.00,
-    omega_A: 0.001,
-    omega_B: 0.001
+    l_gestation: 3,
+    lag: 10
   });
 
-  const [scenarioId, setScenarioId] = useState('hype');
-
-  // Constants fixed as per request
-  const gamma = 0.33;
-  const L_A = 5;
-  const L_B = 1;
-
-  const results = useMemo(() => {
-    const { A0_A, sigma, delta, phi, l, lag, r_target, g_A, g_B, omega_A, omega_B } = params;
+  const simulationResults = useMemo(() => {
+    const { sigma, delta, phi, gamma, r_target, l_gestation, lag } = params;
     const rho = (sigma - 1) / sigma;
-    const T = 60;
-    const t = Array.from({ length: T + 1 }, (_, i) => i);
-    const A_path_A = t.map(v => A0_A * Math.pow(1 + g_A, v));
-    const A_path_B = t.map(v => 1.0 * Math.pow(1 + g_B, v));
+    const T = 60, T_sim = 40;
+    const n = mode === '2C' ? 2 : 3;
     const b_start = 0.001;
+    const b_max = 0.5;
 
-    let bA_p = new Array(T + 1).fill(b_start);
-    let bB_p = new Array(T + 1).fill(b_start);
-    let bPercA_p = new Array(T + 1).fill(b_start);
-    const sigmoid = (v, mid, steep) => 1 / (1 + Math.exp(-steep * (v - mid)));
+    const L_vec = n === 2 ? [5.0, 1.0] : [5.0, 3.0, 3.0];
+    const A_base = n === 2 ? [1.25, 1.0] : [1.25, 1.0, 0.8];
+    const t_axis = Array.from({ length: T + 1 }, (_, i) => i);
 
-    if (scenarioId === 'hype') {
-      bA_p = t.map(v => b_start + (0.02 - b_start) * sigmoid(v, 5, 0.8));
-      bB_p = [...bA_p];
-      const sPeak = t.map(v => sigmoid(v, 3, 2.5) * (1 - sigmoid(v, 7, 1.8)));
-      const sTrough = t.map(v => sigmoid(v, 10, 1.2) * (1 - sigmoid(v, 20, 0.6)));
-      bPercA_p = t.map((v, i) => Math.max(1e-6, bA_p[i] + 0.55 * sPeak[i] - 0.05 * sTrough[i]));
-    } else if (scenarioId === 'tidal') {
-      bA_p = t.map(v => b_start + 0.5 * sigmoid(v, 18, 0.4));
-      bB_p = t.map((v, i) => i < lag ? b_start : bA_p[i - lag]);
-      bPercA_p = [...bA_p];
-    } else if (scenarioId === 'logjam') {
-      const mid1 = 8, mid2 = 30;
-      bA_p = t.map(v => b_start + 0.2 * sigmoid(v, mid1, 0.8) + 0.3 * sigmoid(v, mid2, 0.8));
-      bB_p = t.map((v, i) => i < lag ? b_start : bA_p[i - lag]);
-      bPercA_p = [...bA_p];
-    } else {
-      bA_p = t.map(v => b_start + 0.5 * sigmoid(v, 10, 0.6) + 0.4 * sigmoid(v, 22, 0.8));
-      bB_p = t.map(v => b_start + (0.02 - b_start) * sigmoid(v, 5, 0.8));
-      bPercA_p = [...bA_p];
+    const beta_paths = Array.from({ length: n }, () => Array(T + 1).fill(b_start));
+    let beta_perc_A = Array(T + 1).fill(b_start);
+
+    if (activeScenario === 'hype') {
+      const bA1 = t_axis.map(t => b_start + (0.02 - b_start) / (1 + Math.exp(-0.8 * (t - 5))));
+      const s_peak = t_axis.map(t => (1 / (1 + Math.exp(-2.5 * (t - 3)))) * (1 / (1 + Math.exp(1.8 * (t - 7)))));
+      const s_trough = t_axis.map(t => (1 / (1 + Math.exp(-1.2 * (t - 10)))) * (1 / (1 + Math.exp(0.6 * (t - 20)))));
+      beta_paths[0] = bA1;
+      beta_paths[1] = [...bA1];
+      if (n === 3) beta_paths[2] = Array(T + 1).fill(b_start);
+      beta_perc_A = bA1.map((v, i) => Math.max(1e-6, v + 0.4 * s_peak[i] - 0.05 * s_trough[i]));
+    } else if (activeScenario === 'tidal') {
+      const bA2 = t_axis.map(t => b_start + b_max / (1 + Math.exp(-0.4 * (t - 15))));
+      beta_paths[0] = bA2;
+      beta_paths[1] = t_axis.map(t => t < lag ? b_start : bA2[t - lag]);
+      if (n === 3) beta_paths[2] = t_axis.map(t => t < 2 * lag ? b_start : bA2[t - 2 * lag]);
+      beta_perc_A = [...bA2];
+    } else if (activeScenario === 'logjam') {
+      const bA3 = t_axis.map(t => b_start + 0.25 / (1 + Math.exp(-0.8 * (t - 10))) + 0.30 / (1 + Math.exp(-0.8 * (t - 26))));
+      beta_paths[0] = bA3;
+      beta_paths[1] = t_axis.map(t => t < lag ? b_start : bA3[t - lag]);
+      if (n === 3) beta_paths[2] = t_axis.map(t => t < 2 * lag ? b_start : bA3[t - 2 * lag]);
+      beta_perc_A = [...bA3];
+    } else { 
+      const bA4 = t_axis.map(t => b_start + 0.5 / (1 + Math.exp(-0.6 * (t - 10))) + 0.4 / (1 + Math.exp(-0.8 * (t - 22))));
+      beta_paths[0] = bA4;
+      beta_paths[1] = mode === '2C' ? t_axis.map(t => b_start + (0.02 - b_start) / (1 + Math.exp(-0.8 * (t - 5)))) : bA4.map(v => 0.1 * v);
+      if (n === 3) beta_paths[2] = Array(T + 1).fill(b_start);
+      beta_perc_A = [...bA4];
     }
 
-    const findSS = (a) => {
-      let low = 0.01, high = 400;
-      for (let i = 0; i < 50; i++) {
-        let mid = (low + high) / 2;
-        let r = get_r(mid, b_start, rho, gamma, a, 1, delta);
-        if (r > r_target) low = mid; else high = mid;
-      }
-      return (low + high) / 2;
-    };
+    const K_inits = A_base.map(a => solve_ki_for_r(r_target, b_start, delta, a, 1.0, gamma, rho));
+    const s_base_vec = K_inits.map((ki, i) => (delta * ki) / get_y(ki, b_start, rho, gamma, A_base[i], 1.0));
 
-    const kSS_A = findSS(A_path_A[0]);
-    const kSS_B = findSS(A_path_B[0]);
-    
-    let K_A = new Array(T + 1).fill(kSS_A * L_A);
-    let K_B = new Array(T + 1).fill(kSS_B * L_B);
-    let V_A = new Array(T + 1).fill(kSS_A * L_A);
-    let V_B = new Array(T + 1).fill(kSS_B * L_B);
-    let s_A = new Array(T + 1).fill(0);
-    let s_B = new Array(T + 1).fill(0);
-    let pipe_V_A = new Array(T + l + 1).fill(delta * kSS_A * L_A);
-    let pipe_V_B = new Array(T + l + 1).fill(delta * kSS_B * L_B);
+    let P = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? K_inits[i] * L_vec[i] : 0)));
+    const history = [];
+    const pipelines = Array.from({ length: n }, (_, i) => Array(T + l_gestation + 2).fill(delta * K_inits[i] * L_vec[i]));
+    let s_guess = [...s_base_vec];
 
-    const simulationData = [];
+    const bP_A_extended = [...beta_perc_A, ...Array(l_gestation + 1).fill(beta_perc_A[T])];
+    const b_paths_ext = beta_paths.map(p => [...p, ...Array(l_gestation + 1).fill(p[T])]);
 
-    for (let i = 0; i < T; i++) {
-      const Ya = get_y(K_A[i], bA_p[i], rho, gamma, A_path_A[i], L_A);
-      const Yb = get_y(K_B[i], bB_p[i], rho, gamma, A_path_B[i], L_B);
-      const ra = get_r(K_A[i], bA_p[i], rho, gamma, A_path_A[i], L_A, delta);
-      const rb = get_r(K_B[i], bB_p[i], rho, gamma, A_path_B[i], L_B, delta);
+    for (let t = 0; t < T_sim; t++) {
+      const K_loc = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
+      const bt_now = b_paths_ext.map((p, i) => i === 0 ? bP_A_extended[t] : p[t]);
+      const r_real = Array(n).fill(0).map((_, i) => get_r(K_loc[i], bt_now[i], rho, gamma, A_base[i], L_vec[i], delta));
+      const Y = Array(n).fill(0).map((_, i) => get_y(K_loc[i], bt_now[i], rho, gamma, A_base[i], L_vec[i]));
+      
+      const labor_inc = Y.map((y, i) => y - (r_real[i] + delta) * K_loc[i]);
+      const cap_income = Array(n).fill(0).map((_, owner) => P[owner].reduce((sum, val, loc) => sum + val * (r_real[loc] + delta), 0));
+      const GNI = labor_inc.map((li, i) => li + cap_income[i]);
+      const V_total_pc = P.map((row, i) => row.reduce((a, b) => a + b, 0) / L_vec[i]);
 
-      const labA = Ya - (ra + delta) * K_A[i];
-      const labB = Yb - (rb + delta) * K_B[i];
-      const poolR = (K_A[i] / (K_A[i] + K_B[i])) * ra + (K_B[i] / (K_A[i] + K_B[i])) * rb;
-      const incA = labA + (poolR + delta) * V_A[i];
-      const incB = labB + (poolR + delta) * V_B[i];
-
-      const futIdx = Math.min(T, i + l);
-      let VAfix = V_A[i] * Math.pow(1 - delta, l);
-      let VBfix = V_B[i] * Math.pow(1 - delta, l);
-      for (let m = 1; m < l; m++) {
-        VAfix += pipe_V_A[i + m] * Math.pow(1 - delta, l - m);
-        VBfix += pipe_V_B[i + m] * Math.pow(1 - delta, l - m);
+      const t_f = Math.min(T, t + l_gestation);
+      const bt_f = b_paths_ext.map((p, i) => i === 0 ? bP_A_extended[t_f] : p[t_f]);
+      
+      for (let iter = 0; iter < 10; iter++) {
+        const V_fixed = P.map((row, owner) => {
+          let surv = row.reduce((a, b) => a + b, 0) * Math.pow(1 - delta, l_gestation);
+          for (let m = 1; m < l_gestation; m++) surv += pipelines[owner][t + m] * Math.pow(1 - delta, l_gestation - m);
+          return surv;
+        });
+        const V_tot_f = V_fixed.reduce((a, b) => a + b, 0) + s_guess.reduce((sum, s, i) => sum + s * GNI[i], 0);
+        const K_target_f = solve_global_market(V_tot_f, bt_f, delta, A_base, L_vec, gamma, rho);
+        const r_perc_f = K_target_f.map((ki, i) => get_r(ki, bt_f[i], rho, gamma, A_base[i], L_vec[i], delta));
+        s_guess = s_base_vec.map((sb, i) => Math.max(0, sb + phi * (r_perc_f[i] - r_target)));
       }
 
-      const s_base_A = (delta * kSS_A * L_A) / get_y(kSS_A * L_A, b_start, rho, gamma, A_path_A[0], L_A);
-      const s_base_B = (delta * kSS_B * L_B) / get_y(kSS_B * L_B, b_start, rho, gamma, A_path_B[0], L_B);
+      s_guess.forEach((s, i) => { pipelines[i][t + l_gestation] = s * GNI[i]; });
 
-      let sc = [i === 0 ? s_base_A : s_A[i - 1], i === 0 ? s_base_B : s_B[i - 1]];
-      for (let iter = 0; iter < 30; iter++) {
-        const Vtotf = (VAfix + sc[0] * incA) + (VBfix + sc[1] * incB);
-        const { ra: rae, rb: rbe } = distribute_K(Vtotf, bPercA_p[futIdx], bB_p[futIdx], rho, gamma, delta, L_A, L_B, A_path_A[futIdx], A_path_B[futIdx], omega_A, omega_B, VAfix + sc[0] * incA);
-        const rai = get_r(VAfix + sc[0] * incA, bPercA_p[futIdx], rho, gamma, A_path_A[futIdx], L_A, delta);
-        const rbi = get_r(VBfix + sc[1] * incB, bB_p[futIdx], rho, gamma, A_path_B[futIdx], L_B, delta);
-        const wAw = 0.5 + 0.5 * Math.tanh(50 * (rai - rbi - omega_B));
-        const wBw = 0.5 + 0.5 * Math.tanh(50 * (rbi - rai - omega_A));
-        const rfA = wAw * rae + wBw * (rbe - omega_A) + (1 - wAw - wBw) * rai;
-        const rfB = wAw * (rae - omega_B) + wBw * rbe + (1 - wAw - wBw) * rbi;
-        const st = [Math.max(0, s_base_A + phi * (rfA - r_target)), Math.max(0, s_base_B + phi * (rfB - r_target))];
-        if (Math.abs(st[0] - sc[0]) < 1e-6) break;
-        sc = st;
-      }
-      s_A[i] = sc[0]; s_B[i] = sc[1];
-      pipe_V_A[i + l] = s_A[i] * incA; pipe_V_B[i + l] = s_B[i] * incB;
+      P = P.map(row => row.map(v => v * (1 - delta)));
+      for (let i = 0; i < n; i++) P[i][i] += pipelines[i][t + 1];
 
-      if (i < T) {
-        V_A[i + 1] = V_A[i] * (1 - delta) + pipe_V_A[i + 1];
-        V_B[i + 1] = V_B[i] * (1 - delta) + pipe_V_B[i + 1];
-        const dist = distribute_K(V_A[i + 1] + V_B[i + 1], bPercA_p[i + 1], bB_p[i + 1], rho, gamma, delta, L_A, L_B, A_path_A[i + 1], A_path_B[i + 1], omega_A, omega_B, V_A[i + 1]);
-        K_A[i + 1] = dist.ka; K_B[i + 1] = dist.kb;
+      const V_new_total = P.map(row => row.reduce((a, b) => a + b, 0));
+      const V_tot_world = V_new_total.reduce((a, b) => a + b, 0);
+      const bt_next = b_paths_ext.map((p, i) => i === 0 ? bP_A_extended[t + 1] : p[t + 1]);
+      const K_next = solve_global_market(V_tot_world, bt_next, delta, A_base, L_vec, gamma, rho);
+
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          if (V_tot_world > 1e-9) P[r][c] = V_new_total[r] * (K_next[c] / V_tot_world);
+        }
       }
 
-      simulationData.push({
-        year: i,
-        betaA: bA_p[i], betaB: bB_p[i], betaPercA: bPercA_p[i],
-        nV_A: (i > 0 ? 100 * (V_A[i] - V_A[i - 1]) / V_A[i - 1] : 0),
-        nV_B: (i > 0 ? 100 * (V_B[i] - V_B[i - 1]) / V_B[i - 1] : 0),
-        outA: (Ya / (get_y(kSS_A * L_A, b_start, rho, gamma, A_path_A[0], L_A))) * 100,
-        outB: (Yb / (get_y(kSS_B * L_B, b_start, rho, gamma, A_path_B[0], L_B))) * 100,
-        capA: (K_A[i] / (kSS_A * L_A)) * 100,
-        capB: (K_B[i] / (kSS_B * L_B)) * 100,
-        shareA: ((V_A[i] / L_A) / (V_A[i] / L_A + V_B[i] / L_B)) * 100,
-        shareB: ((V_B[i] / L_B) / (V_A[i] / L_A + V_B[i] / L_B)) * 100,
-        rateA: ra * 100, rateB: rb * 100,
-        beA: ((K_A[i] - (i > 0 ? (1 - delta) * K_A[i - 1] : K_A[i])) - delta * K_A[i]) / L_A,
-        beB: ((K_B[i] - (i > 0 ? (1 - delta) * K_B[i - 1] : K_B[i])) - delta * K_B[i]) / L_B,
-        lsA: (labA / incA) * 100, lsB: (labB / incB) * 100,
-        tfpA: (Ya / (A_path_A[i] * Math.pow(K_A[i], gamma))) / (get_y(kSS_A * L_A, b_start, rho, gamma, A_path_A[0], L_A) / (A_path_A[0] * Math.pow(kSS_A * L_A, gamma))) * 100,
-        tfpB: (Yb / (A_path_B[i] * Math.pow(K_B[i], gamma))) / (get_y(kSS_B * L_B, b_start, rho, gamma, A_path_B[0], L_B) / (A_path_B[0] * Math.pow(kSS_B * L_B, gamma))) * 100,
+      history.push({
+        t,
+        K1: K_loc[0], K2: K_loc[1], K3: K_loc[2] || 0,
+        r1: r_real[0] * 100, r2: r_real[1] * 100, r3: (r_real[2] || 0) * 100,
+        V1: V_total_pc[0], V2: V_total_pc[1], V3: V_total_pc[2] || 0,
+        GNI1: GNI[0] / (history[0]?.GNI1_raw || GNI[0]) * 100,
+        GNI2: GNI[1] / (history[0]?.GNI2_raw || GNI[1]) * 100,
+        GNI3: GNI[2] / (history[0]?.GNI3_raw || GNI[2] || 1) * 100,
+        GNI1_raw: GNI[0], GNI2_raw: GNI[1], GNI3_raw: GNI[2] || 0,
+        beta1: bt_now[0], beta2: bt_now[1], beta3: bt_now[2] || 0
       });
     }
-    return simulationData.filter(d => d.year <= 40);
-  }, [params, scenarioId]);
+    return history;
+  }, [mode, activeScenario, params]);
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      <aside className="w-80 bg-white border-r flex flex-col overflow-y-auto p-6 shadow-sm z-20">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="bg-blue-600 p-2 rounded-lg text-white"><TrendingUp size={20} /></div>
-          <h1 className="text-lg font-bold tracking-tight">Vortex Simulator</h1>
+    <div className="flex h-screen bg-slate-50 overflow-hidden">
+      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-xl z-10">
+        <div className="p-6 border-b border-slate-100 flex items-center space-x-3 bg-white">
+          <div className="bg-indigo-600 p-2 rounded-xl shadow-lg">
+            <Layers className="text-white w-6 h-6" />
+          </div>
+          <h1 className="font-black text-slate-800 text-lg tracking-tight uppercase">Capital Flows</h1>
         </div>
 
-        <div className="space-y-8">
+        <div className="flex-1 overflow-y-auto p-6 space-y-8 scrollbar-hide">
           <section>
-            <div className="flex items-center gap-2 mb-4 text-xs font-bold text-slate-400 uppercase tracking-widest"><Activity size={14} /><h2>Scenario</h2></div>
-            <div className="space-y-2">
-              {['hype', 'tidal', 'logjam', 'gulf'].map(id => (
-                <button key={id} onClick={() => setScenarioId(id)} className={`w-full text-left p-3 rounded-xl border text-sm font-semibold transition-all ${scenarioId === id ? 'bg-blue-50 border-blue-200 text-blue-700 ring-2 ring-blue-500/10' : 'bg-white border-slate-100 hover:border-slate-300'}`}>
-                  {id.charAt(0).toUpperCase() + id.slice(1).replace('_', ' ')}
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">Topology</label>
+            <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
+              {['2C', '3C'].map(m => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`py-2 text-xs font-bold rounded-lg transition-all ${mode === m ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  {m === '2C' ? '2-Country' : '3-Country'}
                 </button>
               ))}
             </div>
           </section>
 
           <section>
-            <div className="flex items-center gap-2 mb-4 text-xs font-bold text-slate-400 uppercase tracking-widest"><Settings size={14} /><h2>Structural Parameters</h2></div>
-            <div className="space-y-4">
-              {[
-                { label: 'Initial TFP A (A0_A)', key: 'A0_A', min: 1.0, max: 2.0, step: 0.05 },
-                { label: 'Growth A (g_A)', key: 'g_A', min: 0, max: 0.05, step: 0.001 },
-                { label: 'Growth B (g_B)', key: 'g_B', min: 0, max: 0.05, step: 0.001 },
-                { label: 'Exodus Friction (ωA)', key: 'omega_A', min: 0, max: 0.01, step: 0.001 },
-                { label: 'Vortex Friction (ωB)', key: 'omega_B', min: 0, max: 0.01, step: 0.001 },
-                { label: 'Elasticity (σ)', key: 'sigma', min: 0.1, max: 0.9, step: 0.05 },
-                { label: 'Sensitivity (φ)', key: 'phi', min: 0, max: 2, step: 0.1 },
-              ].map(p => (
-                <div key={p.key} className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-bold text-slate-500">
-                    <span>{p.label}</span>
-                    <span className="text-blue-600 tabular-nums">{params[p.key].toFixed(3)}</span>
-                  </div>
-                  <input type="range" min={p.min} max={p.max} step={p.step} value={params[p.key]} onChange={(e) => setParams({ ...params, [p.key]: parseFloat(e.target.value) })} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
-                </div>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">Scenarios</label>
+            <div className="space-y-2">
+              {SCENARIOS.map(s => (
+                <button
+                  key={s.id}
+                  onClick={() => setActiveScenario(s.id)}
+                  className={`w-full p-3 text-left rounded-xl border text-[11px] font-black transition-all flex items-center justify-between ${activeScenario === s.id ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm' : 'bg-white border-slate-100 text-slate-500 hover:border-slate-300'}`}
+                >
+                  <span>{s.name.toUpperCase()}</span>
+                  {activeScenario === s.id && <ChevronRight className="w-4 h-4" />}
+                </button>
               ))}
             </div>
+          </section>
+
+          <section className="space-y-5">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Parameters</label>
+            <ParamSlider label="σ (Elasticity)" val={params.sigma} min={0.1} max={0.9} step={0.1} onChange={v => setParams({...params, sigma: v})} />
+            <ParamSlider label="γ (Capital Share)" val={params.gamma} min={0.25} max={0.45} step={0.01} onChange={v => setParams({...params, gamma: v})} />
+            <ParamSlider label="φ (Behavioral)" val={params.phi} min={0} max={1} step={0.05} onChange={v => setParams({...params, phi: v})} />
+            <ParamSlider label="Lag Duration" val={params.lag} min={2} max={20} step={1} onChange={v => setParams({...params, lag: v})} />
           </section>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-8 bg-slate-50 scroll-smooth">
-        <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-6 max-w-[1600px] mx-auto pb-12">
-          
-          <ChartCard title="Automation (β)" icon={<Zap size={16} />} color="#2563eb">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis domain={[0, 1]} fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="betaA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="betaB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="betaPercA" name="Perceived" stroke="#2563eb" strokeWidth={1} strokeDasharray="4 4" dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between flex-shrink-0">
+          <h2 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center">
+            <Activity className="w-4 h-4 mr-2 text-indigo-500" /> Impulse Response Dashboard
+          </h2>
+          <div className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded text-[10px] font-black border border-emerald-100">
+            ENGINE STATUS: ACTIVE
+          </div>
+        </header>
 
-          <ChartCard title="Net Wealth % Change" icon={<BarChart3 size={16} />} color="#059669">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="nV_A" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="nV_B" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+        <div className="flex-1 overflow-y-auto p-8 space-y-8 scroll-smooth">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <StatCard title="Peak Returns" value={(simulationResults.length > 0 ? Math.max(...simulationResults.map(d => d.r1)) : 0).toFixed(1) + '%'} trend="up" label="C1" />
+            <StatCard title="Cap. Accumulation" value={(simulationResults.length > 39 ? simulationResults[39].K1 : 0).toFixed(1)} trend="up" label="Total Stock" />
+            <StatCard title="Rel. Growth" value={'+' + (simulationResults.length > 39 ? (simulationResults[39].GNI1 - 100) : 0).toFixed(1) + '%'} trend="up" label="GNI Index" />
+            <StatCard title="System Solved" value="Stable" trend="stable" label="Global" />
+          </div>
 
-          <ChartCard title="Output Index (GDP)" icon={<TrendingUp size={16} />} color="#7c3aed">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="outA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="outB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 pb-12">
+            <ChartWrapper title="Capital Stock (K)">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
+                  <YAxis fontSize={10} stroke="#94a3b8" />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Line type="monotone" dataKey="K1" name="C1" stroke="#6366f1" strokeWidth={3} dot={false} />
+                  <Line type="monotone" dataKey="K2" name="C2" stroke="#10b981" strokeWidth={3} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="K3" name="C3" stroke="#f59e0b" strokeWidth={3} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartWrapper>
 
-          <ChartCard title="Kapital Index" icon={<PieChart size={16} />} color="#db2777">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="capA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="capB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+            <ChartWrapper title="Realized Returns (%)">
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
+                  <YAxis fontSize={10} stroke="#94a3b8" />
+                  <Tooltip />
+                  <Area type="monotone" dataKey="r1" name="R1" stroke="#6366f1" fill="#6366f1" fillOpacity={0.05} strokeWidth={2} />
+                  <Area type="monotone" dataKey="r2" name="R2" stroke="#10b981" fill="transparent" strokeDasharray="4 4" strokeWidth={2} />
+                  {mode === '3C' && <Area type="monotone" dataKey="r3" name="R3" stroke="#f59e0b" fill="transparent" strokeDasharray="4 4" strokeWidth={2} />}
+                </AreaChart>
+              </ResponsiveContainer>
+            </ChartWrapper>
 
-          <ChartCard title="Wealth Per-Capita Share" icon={<BarChart3 size={16} />} color="#ea580c">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} domain={[0, 100]} />
-                <ReferenceLine y={50} stroke="#cbd5e1" strokeDasharray="3 3" />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="shareA" name="Leader Share" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="shareB" name="Laggard Share" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+            <ChartWrapper title="Wealth Per Capita (V/L)">
+              <ResponsiveContainer width="100%" height={300}>
+                <ComposedChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
+                  <YAxis fontSize={10} stroke="#94a3b8" />
+                  <Tooltip />
+                  <Bar dataKey="V1" name="Wealth C1" fill="#6366f1" radius={[2, 2, 0, 0]} opacity={0.6} barSize={10} />
+                  <Line type="step" dataKey="V2" name="Wealth C2" stroke="#10b981" strokeWidth={2} dot={false} />
+                  {mode === '3C' && <Line type="step" dataKey="V3" name="Wealth C3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </ChartWrapper>
 
-          <ChartCard title="Interest Rates (%)" icon={<Globe size={16} />} color="#2563eb">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="rateA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="rateB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
-          <ChartCard title="Break-even Gap p.c." icon={<Zap size={16} />} color="#9333ea">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <ReferenceLine y={0} stroke="#cbd5e1" strokeDasharray="3 3" />
-                <Line type="monotone" dataKey="beA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="beB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
-          <ChartCard title="Labor Share of GNI" icon={<Layers size={16} />} color="#16a34a">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="lsA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="lsB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
-          <ChartCard title="Task TFP Index" icon={<Activity size={16} />} color="#ca8a04">
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={results} margin={{left: -20}}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="year" fontSize={10} />
-                <YAxis fontSize={10} />
-                <Tooltip content={<CustomTooltip />} />
-                <Line type="monotone" dataKey="tfpA" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="tfpB" name="Laggard" stroke="#dc2626" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
+            <ChartWrapper title="GNI Indices (Base=100)">
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
+                  <YAxis fontSize={10} stroke="#94a3b8" />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="GNI1" name="GNI C1" stroke="#6366f1" strokeWidth={3} dot={false} />
+                  <Line type="monotone" dataKey="GNI2" name="GNI C2" stroke="#10b981" strokeWidth={3} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="GNI3" name="GNI C3" stroke="#f59e0b" strokeWidth={3} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartWrapper>
+          </div>
         </div>
       </main>
     </div>
   );
 };
 
-const ChartCard = ({ title, icon, color, children }) => (
-  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm transition-all hover:shadow-md">
-    <div className="flex items-center gap-2 mb-4">
-      <div className="p-1.5 rounded-md text-white shadow-sm" style={{ backgroundColor: color }}>{icon}</div>
-      <h3 className="text-sm font-bold text-slate-700">{title}</h3>
+const ParamSlider = ({ label, val, min, max, step, onChange }) => (
+  <div className="space-y-3">
+    <div className="flex justify-between items-center text-[10px] font-black text-slate-500">
+      <span>{label.toUpperCase()}</span>
+      <span className="font-mono text-indigo-600">{val}</span>
+    </div>
+    <input
+      type="range" min={min} max={max} step={step} value={val}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+    />
+  </div>
+);
+
+const StatCard = ({ title, value, trend, label }) => (
+  <div className="bg-white p-5 rounded-2xl border border-slate-200">
+    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{title}</div>
+    <div className="text-xl font-black text-slate-800 mb-1">{value}</div>
+    <div className="text-[9px] font-bold text-indigo-500 uppercase">{label}</div>
+  </div>
+);
+
+const ChartWrapper = ({ title, children }) => (
+  <div className="bg-white p-6 rounded-2xl border border-slate-200">
+    <div className="text-xs font-black text-slate-800 uppercase tracking-widest mb-6 border-l-4 border-indigo-500 pl-3">
+      {title}
     </div>
     {children}
   </div>
@@ -386,19 +354,14 @@ const ChartCard = ({ title, icon, color, children }) => (
 const CustomTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-slate-900/95 backdrop-blur-sm text-white p-3 rounded-xl shadow-2xl border border-slate-700 text-[10px] min-w-[120px]">
-        <p className="text-slate-400 font-bold border-b border-slate-700 pb-1 mb-2">Year {label}</p>
-        <div className="space-y-1.5">
-          {payload.map((entry, index) => (
-            <div key={index} className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: entry.stroke }} />
-                <span className="text-slate-300 font-semibold">{entry.name}:</span>
-              </div>
-              <span className="font-mono text-white text-[11px]">{entry.value.toFixed(2)}</span>
-            </div>
-          ))}
-        </div>
+      <div className="bg-slate-900 text-white p-3 rounded-lg text-[10px] font-bold shadow-2xl">
+        <div className="mb-2 text-slate-400 uppercase tracking-widest">Period {label}</div>
+        {payload.map((p, i) => (
+          <div key={i} className="flex justify-between space-x-4 mb-1">
+            <span style={{ color: p.color }}>{p.name}:</span>
+            <span className="font-mono">{parseFloat(p.value).toFixed(2)}</span>
+          </div>
+        ))}
       </div>
     );
   }

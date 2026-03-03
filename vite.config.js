@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Replace 'two_country_lags' with your actual GitHub repository name
+// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // Change this if you rename your GitHub repository
   base: '/two_country_lags/', 
 })
