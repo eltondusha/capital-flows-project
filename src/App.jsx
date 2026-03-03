@@ -262,15 +262,15 @@ const App = () => {
                 <ParamSlider label="Savings Sensitivity (φ)" val={params.phi} min={0} max={1} step={0.05} onChange={v => setParams({...params, phi: v})} />
                 <div className="space-y-4 pt-4 border-t border-slate-50">
                   <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">Growth Rates (g)</label>
-                  <ParamSlider label="g1" val={params.g1} min={-0.02} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} />
-                  <ParamSlider label="g2" val={params.g2} min={-0.02} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} />
-                  {mode === '3C' && <ParamSlider label="g3" val={params.g3} min={-0.02} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} />}
+                  <ParamSlider label="g1" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} />
+                  <ParamSlider label="g2" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} />
+                  {mode === '3C' && <ParamSlider label="g3" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} />}
                 </div>
                 <div className="space-y-4 pt-4 border-t border-slate-50">
                   <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block text-blue-600">Profit Tax (ω)</label>
-                  <ParamSlider label="ω1" val={params.w1} min={0} max={0.9} step={0.001} onChange={v => setParams({...params, w1: v})} />
-                  <ParamSlider label="ω2" val={params.w2} min={0} max={0.9} step={0.001} onChange={v => setParams({...params, w2: v})} />
-                  {mode === '3C' && <ParamSlider label="ω3" val={params.w3} min={0} max={0.9} step={0.001} onChange={v => setParams({...params, w3: v})} />}
+                  <ParamSlider label="ω1" val={params.w1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w1: v})} />
+                  <ParamSlider label="ω2" val={params.w2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w2: v})} />
+                  {mode === '3C' && <ParamSlider label="ω3" val={params.w3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w3: v})} />}
                 </div>
               </div>
             </>
@@ -294,7 +294,7 @@ const App = () => {
                   <ExplainerCard icon={<PauseCircle className="w-3.5 h-3.5" />} title="Logjam Lag" text="Stall period between adoption waves." color="border-rose-500" />
                   <ExplainerCard icon={<TrendingUp className="w-3.5 h-3.5" />} title="Growth Rates" text="Productivity growth paths per country." color="border-emerald-500" />
                   <ExplainerCard icon={<RefreshCw className="w-3.5 h-3.5" />} title="Sensitivity" text="How savings respond to return spreads." color="border-amber-500" />
-                  <ExplainerCard icon={<TrendingDown className="w-3.5 h-3.5" />} title="Profit Tax" text="Tax on foreign earnings in a country." color="border-rose-500" />
+                  <ExplainerCard icon={<TrendingDown className="w-3.5 h-3.5" />} title="Profit Tax" text="Tax foreigners pay on earnings in a country." color="border-rose-500" />
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4 items-start">
