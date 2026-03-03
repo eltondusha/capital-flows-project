@@ -5,10 +5,10 @@ import {
 } from 'recharts';
 import {
   Globe, Settings, Activity, TrendingUp, Layers, RefreshCw,
-  ChevronRight, Info, Database, TrendingDown, Layout
+  ChevronRight, Info, Database, TrendingDown, Layout, HelpCircle
 } from 'lucide-react';
 
-// --- MATH ENGINE (Direct Translation from MATLAB logic) ---
+// --- MATH ENGINE ---
 
 const get_y = (k, bt, rho, gamma, A, L) => {
   const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
@@ -57,10 +57,10 @@ const solve_global_market = (V_tot, bt_vec, delta, A_vec, L_vec, gamma, rho) => 
 };
 
 const SCENARIOS = [
-  { id: 'hype', name: 'Scenario 1: Hype Cycle' },
-  { id: 'tidal', name: 'Scenario 2: Tidal Flow' },
-  { id: 'logjam', name: 'Scenario 3: Logjam' },
-  { id: 'gulf', name: 'Scenario 4: The Gulf' }
+  { id: 'hype', name: 'Scenario 1: Hype Cycle', description: "Perceived tech adoption peaks early, driving a temporary boom in returns and savings." },
+  { id: 'tidal', name: 'Scenario 2: Tidal Flow', description: "Standard S-curve adoption with fixed diffusion lags across countries." },
+  { id: 'logjam', name: 'Scenario 3: Logjam', description: "Multi-stage adoption with a structural stall before the final wave." },
+  { id: 'gulf', name: 'Scenario 4: The Gulf', description: "Permanent divide where followers fail to catch up to the leader's adoption rate." }
 ];
 
 const App = () => {
@@ -91,6 +91,7 @@ const App = () => {
     const beta_paths = Array.from({ length: n }, () => Array(T + 1).fill(b_start));
     let beta_perc_A = Array(T + 1).fill(b_start);
 
+    // Scenario Generation
     if (activeScenario === 'hype') {
       const bA1 = t_axis.map(t => b_start + (0.02 - b_start) / (1 + Math.exp(-0.8 * (t - 5))));
       const s_peak = t_axis.map(t => (1 / (1 + Math.exp(-2.5 * (t - 3)))) * (1 / (1 + Math.exp(1.8 * (t - 7)))));
@@ -139,8 +140,10 @@ const App = () => {
       const labor_inc = Y.map((y, i) => y - (r_real[i] + delta) * K_loc[i]);
       const cap_income = Array(n).fill(0).map((_, owner) => P[owner].reduce((sum, val, loc) => sum + val * (r_real[loc] + delta), 0));
       const GNI = labor_inc.map((li, i) => li + cap_income[i]);
-      const V_total_pc = P.map((row, i) => row.reduce((a, b) => a + b, 0) / L_vec[i]);
+      const V_total = P.map(row => row.reduce((a, b) => a + b, 0));
+      const wealth_share_pc = V_total.map((v, i) => (v / L_vec[i]) / V_total.reduce((sum, vi, idx) => sum + (vi / L_vec[idx]), 0) * 100);
 
+      // Foresight/Savings Logic
       const t_f = Math.min(T, t + l_gestation);
       const bt_f = b_paths_ext.map((p, i) => i === 0 ? bP_A_extended[t_f] : p[t_f]);
       
@@ -158,6 +161,8 @@ const App = () => {
 
       s_guess.forEach((s, i) => { pipelines[i][t + l_gestation] = s * GNI[i]; });
 
+      // Evolution for Break-even and Capital Split
+      const K_prev = [...K_loc];
       P = P.map(row => row.map(v => v * (1 - delta)));
       for (let i = 0; i < n; i++) P[i][i] += pipelines[i][t + 1];
 
@@ -176,37 +181,43 @@ const App = () => {
         t,
         K1: K_loc[0], K2: K_loc[1], K3: K_loc[2] || 0,
         r1: r_real[0] * 100, r2: r_real[1] * 100, r3: (r_real[2] || 0) * 100,
-        V1: V_total_pc[0], V2: V_total_pc[1], V3: V_total_pc[2] || 0,
+        s1: s_guess[0], s2: s_guess[1], s3: s_guess[2] || 0,
+        sh1: wealth_share_pc[0], sh2: wealth_share_pc[1], sh3: wealth_share_pc[2] || 0,
+        ls1: labor_inc[0] / GNI[0], ls2: labor_inc[1] / GNI[1], ls3: labor_inc[2] ? (labor_inc[2] / GNI[2]) : 0,
+        be1: ((K_next[0] - (1 - delta) * K_prev[0]) - delta * K_prev[0]) / L_vec[0],
+        be2: ((K_next[1] - (1 - delta) * K_prev[1]) - delta * K_prev[1]) / L_vec[1],
+        be3: K_next[2] ? (((K_next[2] - (1 - delta) * K_prev[2]) - delta * K_prev[2]) / L_vec[2]) : 0,
         GNI1: GNI[0] / (history[0]?.GNI1_raw || GNI[0]) * 100,
         GNI2: GNI[1] / (history[0]?.GNI2_raw || GNI[1]) * 100,
         GNI3: GNI[2] / (history[0]?.GNI3_raw || GNI[2] || 1) * 100,
         GNI1_raw: GNI[0], GNI2_raw: GNI[1], GNI3_raw: GNI[2] || 0,
-        beta1: bt_now[0], beta2: bt_now[1], beta3: bt_now[2] || 0
+        beta1: bt_now[0], beta2: bt_now[1], beta3: bt_now[2] || 0,
+        betaP: (activeScenario === 'hype') ? beta_perc_A[t] : null
       });
     }
     return history;
   }, [mode, activeScenario, params]);
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-xl z-10">
+    <div className="flex h-screen bg-slate-50 overflow-hidden font-sans text-slate-900">
+      {/* Sidebar */}
+      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-xl z-20">
         <div className="p-6 border-b border-slate-100 flex items-center space-x-3 bg-white">
           <div className="bg-indigo-600 p-2 rounded-xl shadow-lg">
-            <Layers className="text-white w-6 h-6" />
+            <Globe className="text-white w-6 h-6" />
           </div>
-          <h1 className="font-black text-slate-800 text-lg tracking-tight uppercase">Capital Flows</h1>
+          <div>
+            <h1 className="font-black text-slate-800 text-lg leading-tight">CAPITAL FLOWS</h1>
+            <div className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest">Multi-Country Engine</div>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8 scrollbar-hide">
           <section>
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">Topology</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">World Topology</label>
             <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
               {['2C', '3C'].map(m => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`py-2 text-xs font-bold rounded-lg transition-all ${mode === m ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}
-                >
+                <button key={m} onClick={() => setMode(m)} className={`py-2 text-xs font-bold rounded-lg transition-all ${mode === m ? 'bg-white text-indigo-600 shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>
                   {m === '2C' ? '2-Country' : '3-Country'}
                 </button>
               ))}
@@ -214,14 +225,10 @@ const App = () => {
           </section>
 
           <section>
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">Scenarios</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 block">Active Scenario</label>
             <div className="space-y-2">
               {SCENARIOS.map(s => (
-                <button
-                  key={s.id}
-                  onClick={() => setActiveScenario(s.id)}
-                  className={`w-full p-3 text-left rounded-xl border text-[11px] font-black transition-all flex items-center justify-between ${activeScenario === s.id ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm' : 'bg-white border-slate-100 text-slate-500 hover:border-slate-300'}`}
-                >
+                <button key={s.id} onClick={() => setActiveScenario(s.id)} className={`w-full p-3 text-left rounded-xl border text-[11px] font-black transition-all flex items-center justify-between ${activeScenario === s.id ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm' : 'bg-white border-slate-100 text-slate-500 hover:border-slate-300'}`}>
                   <span>{s.name.toUpperCase()}</span>
                   {activeScenario === s.id && <ChevronRight className="w-4 h-4" />}
                 </button>
@@ -239,80 +246,131 @@ const App = () => {
         </div>
       </aside>
 
+      {/* Main Dashboard */}
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between flex-shrink-0">
-          <h2 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center">
-            <Activity className="w-4 h-4 mr-2 text-indigo-500" /> Impulse Response Dashboard
+          <h2 className="text-xs font-black uppercase tracking-widest flex items-center text-slate-600">
+            <Activity className="w-4 h-4 mr-2 text-indigo-500" /> Impulse Response Matrix
           </h2>
-          <div className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded text-[10px] font-black border border-emerald-100">
-            ENGINE STATUS: ACTIVE
+          <div className="bg-indigo-900 text-white px-4 py-1.5 rounded-full text-[10px] font-black tracking-widest flex items-center space-x-2">
+             <span>{SCENARIOS.find(s => s.id === activeScenario).name.toUpperCase()}</span>
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-8 space-y-8 scroll-smooth">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <StatCard title="Peak Returns" value={(simulationResults.length > 0 ? Math.max(...simulationResults.map(d => d.r1)) : 0).toFixed(1) + '%'} trend="up" label="C1" />
-            <StatCard title="Cap. Accumulation" value={(simulationResults.length > 39 ? simulationResults[39].K1 : 0).toFixed(1)} trend="up" label="Total Stock" />
-            <StatCard title="Rel. Growth" value={'+' + (simulationResults.length > 39 ? (simulationResults[39].GNI1 - 100) : 0).toFixed(1) + '%'} trend="up" label="GNI Index" />
-            <StatCard title="System Solved" value="Stable" trend="stable" label="Global" />
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 pb-12">
-            <ChartWrapper title="Capital Stock (K)">
-              <ResponsiveContainer width="100%" height={300}>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+            
+            {/* ROW 1: TECH & CAPITAL */}
+            <ChartTile title="Tech Adoption (β)">
+              <ResponsiveContainer width="100%" height={240}>
                 <LineChart data={simulationResults}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
-                  <YAxis fontSize={10} stroke="#94a3b8" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Line type="monotone" dataKey="K1" name="C1" stroke="#6366f1" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="K2" name="C2" stroke="#10b981" strokeWidth={3} dot={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="K3" name="C3" stroke="#f59e0b" strokeWidth={3} dot={false} />}
+                  <Line type="monotone" dataKey="beta1" name="Leader" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="beta2" name="Follower" stroke="#10b981" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                  {mode === '3C' && <Line type="monotone" dataKey="beta3" name="Laggard" stroke="#f59e0b" strokeWidth={2} dot={false} strokeDasharray="4 4" />}
+                  {activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" name="Perceived" stroke="#6366f1" strokeWidth={1} dot={false} strokeDasharray="2 2" opacity={0.5} />}
                 </LineChart>
               </ResponsiveContainer>
-            </ChartWrapper>
+            </ChartTile>
 
-            <ChartWrapper title="Realized Returns (%)">
-              <ResponsiveContainer width="100%" height={300}>
+            <ChartTile title="Physical Capital (K)">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} />
+                  <Line type="monotone" dataKey="K1" name="C1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="K2" name="C2" stroke="#10b981" strokeWidth={2} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="K3" name="C3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartTile>
+
+            {/* ROW 2: RETURNS & SAVINGS */}
+            <ChartTile title="Realized Returns (%)">
+              <ResponsiveContainer width="100%" height={240}>
                 <AreaChart data={simulationResults}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
-                  <YAxis fontSize={10} stroke="#94a3b8" />
-                  <Tooltip />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} />
                   <Area type="monotone" dataKey="r1" name="R1" stroke="#6366f1" fill="#6366f1" fillOpacity={0.05} strokeWidth={2} />
-                  <Area type="monotone" dataKey="r2" name="R2" stroke="#10b981" fill="transparent" strokeDasharray="4 4" strokeWidth={2} />
-                  {mode === '3C' && <Area type="monotone" dataKey="r3" name="R3" stroke="#f59e0b" fill="transparent" strokeDasharray="4 4" strokeWidth={2} />}
+                  <Area type="monotone" dataKey="r2" name="R2" stroke="#10b981" fill="none" strokeDasharray="4 4" strokeWidth={2} />
+                  {mode === '3C' && <Area type="monotone" dataKey="r3" name="R3" stroke="#f59e0b" fill="none" strokeDasharray="4 4" strokeWidth={2} />}
                 </AreaChart>
               </ResponsiveContainer>
-            </ChartWrapper>
+            </ChartTile>
 
-            <ChartWrapper title="Wealth Per Capita (V/L)">
-              <ResponsiveContainer width="100%" height={300}>
-                <ComposedChart data={simulationResults}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
-                  <YAxis fontSize={10} stroke="#94a3b8" />
-                  <Tooltip />
-                  <Bar dataKey="V1" name="Wealth C1" fill="#6366f1" radius={[2, 2, 0, 0]} opacity={0.6} barSize={10} />
-                  <Line type="step" dataKey="V2" name="Wealth C2" stroke="#10b981" strokeWidth={2} dot={false} />
-                  {mode === '3C' && <Line type="step" dataKey="V3" name="Wealth C3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
-                </ComposedChart>
-              </ResponsiveContainer>
-            </ChartWrapper>
-
-            <ChartWrapper title="GNI Indices (Base=100)">
-              <ResponsiveContainer width="100%" height={300}>
+            <ChartTile title="Savings Rate (s)">
+              <ResponsiveContainer width="100%" height={240}>
                 <LineChart data={simulationResults}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={10} stroke="#94a3b8" />
-                  <YAxis fontSize={10} stroke="#94a3b8" />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="GNI1" name="GNI C1" stroke="#6366f1" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="GNI2" name="GNI C2" stroke="#10b981" strokeWidth={3} dot={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="GNI3" name="GNI C3" stroke="#f59e0b" strokeWidth={3} dot={false} />}
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} domain={['auto', 'auto']} />
+                  <Line type="monotone" dataKey="s1" name="s1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="s2" name="s2" stroke="#10b981" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                  {mode === '3C' && <Line type="monotone" dataKey="s3" name="s3" stroke="#f59e0b" strokeWidth={2} dot={false} strokeDasharray="4 4" />}
                 </LineChart>
               </ResponsiveContainer>
-            </ChartWrapper>
+            </ChartTile>
+
+            {/* ROW 3: WEALTH & LABOUR */}
+            <ChartTile title="Wealth Share % (p.c.)">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} domain={[0, 100]} />
+                  <Line type="monotone" dataKey="sh1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="sh2" stroke="#10b981" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                  {mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#f59e0b" strokeWidth={2} dot={false} strokeDasharray="4 4" />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartTile>
+
+            <ChartTile title="Labour Share of GNI">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} domain={['auto', 'auto']} />
+                  <Line type="monotone" dataKey="ls1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="ls2" stroke="#10b981" strokeWidth={2} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartTile>
+
+            {/* ROW 4: BREAK-EVEN & GNI */}
+            <ChartTile title="Break-even Gap p.c.">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis fontSize={9} />
+                  <ReferenceLine y={0} stroke="#475569" strokeWidth={1} />
+                  <Line type="monotone" dataKey="be1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="be2" stroke="#10b981" strokeWidth={2} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="be3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartTile>
+
+            <ChartTile title="GNI Index">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={simulationResults}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={9} />
+                  <YAxis fontSize={9} />
+                  <Line type="monotone" dataKey="GNI1" stroke="#6366f1" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="GNI2" stroke="#10b981" strokeWidth={2} dot={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="GNI3" stroke="#f59e0b" strokeWidth={2} dot={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartTile>
+
           </div>
         </div>
       </main>
@@ -320,34 +378,22 @@ const App = () => {
   );
 };
 
+// --- SUB-COMPONENTS ---
+
+const ChartTile = ({ title, children }) => (
+  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4 border-b border-slate-50 pb-2">{title}</div>
+    {children}
+  </div>
+);
+
 const ParamSlider = ({ label, val, min, max, step, onChange }) => (
   <div className="space-y-3">
     <div className="flex justify-between items-center text-[10px] font-black text-slate-500">
       <span>{label.toUpperCase()}</span>
-      <span className="font-mono text-indigo-600">{val}</span>
+      <span className="font-mono text-indigo-600 bg-indigo-50 px-2 rounded">{val}</span>
     </div>
-    <input
-      type="range" min={min} max={max} step={step} value={val}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-    />
-  </div>
-);
-
-const StatCard = ({ title, value, trend, label }) => (
-  <div className="bg-white p-5 rounded-2xl border border-slate-200">
-    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{title}</div>
-    <div className="text-xl font-black text-slate-800 mb-1">{value}</div>
-    <div className="text-[9px] font-bold text-indigo-500 uppercase">{label}</div>
-  </div>
-);
-
-const ChartWrapper = ({ title, children }) => (
-  <div className="bg-white p-6 rounded-2xl border border-slate-200">
-    <div className="text-xs font-black text-slate-800 uppercase tracking-widest mb-6 border-l-4 border-indigo-500 pl-3">
-      {title}
-    </div>
-    {children}
+    <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
   </div>
 );
 
@@ -355,11 +401,11 @@ const CustomTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     return (
       <div className="bg-slate-900 text-white p-3 rounded-lg text-[10px] font-bold shadow-2xl">
-        <div className="mb-2 text-slate-400 uppercase tracking-widest">Period {label}</div>
+        <div className="mb-2 text-slate-400">T = {label}</div>
         {payload.map((p, i) => (
-          <div key={i} className="flex justify-between space-x-4 mb-1">
+          <div key={i} className="flex justify-between space-x-4 mb-0.5">
             <span style={{ color: p.color }}>{p.name}:</span>
-            <span className="font-mono">{parseFloat(p.value).toFixed(2)}</span>
+            <span className="font-mono">{parseFloat(p.value).toFixed(3)}</span>
           </div>
         ))}
       </div>
