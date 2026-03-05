@@ -132,8 +132,8 @@ const App = () => {
     }
 
     const K_init_vec = A_0.map(a => solve_ki_for_r(r_target, b_start, delta, a, 1.0, gamma, rho));
-    const Y_initial_pc = K_init_vec.map((ki, i) => get_y(ki, b_start, rho, gamma, A_0[i], 1.0));
-    const s_base_vec = K_init_vec.map((ki, i) => (delta * ki) / Y_initial_pc[i]);
+    const Y_initial_absolute = K_init_vec.map((ki, i) => get_y(ki, b_start, rho, gamma, A_0[i], 1.0));
+    const s_base_vec = K_init_vec.map((ki, i) => (delta * ki) / Y_initial_absolute[i]);
 
     let P = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? K_init_vec[i] * L_vec[i] : 0)));
     const pipelines = Array.from({ length: n }, (_, i) => Array(T + l + 10).fill(delta * K_init_vec[i] * L_vec[i]));
@@ -143,8 +143,6 @@ const App = () => {
     const bP_paths_ext = beta_paths.map(p => [...p, ...Array(l + 10).fill(p[T])]);
     const bP_A_ext = [...bP_A_extended, ...Array(l + 10).fill(bP_A_extended[T])];
 
-    let Y_base_absolute = [];
-
     for (let t = 0; t < T_sim; t++) {
       const K_curr = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
       const V_curr = P.map(row => row.reduce((a, b) => a + b, 0));
@@ -152,8 +150,6 @@ const App = () => {
       const A_curr = A_0.map((a, i) => a * Math.pow(1 + g_vec[i], t));
 
       const Y = Array(n).fill(0).map((_, i) => get_y(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i]));
-      if (t === 0) Y_base_absolute = [...Y];
-      
       const r_real = Array(n).fill(0).map((_, i) => get_r(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i], delta));
       
       const labor_inc = Y.map((y, i) => y - (r_real[i] + delta) * K_curr[i]);
@@ -208,7 +204,7 @@ const App = () => {
         t,
         beta1: bt_r[0], beta2: bt_r[1], beta3: bt_r[2] || 0,
         betaP: activeScenario === 'hype' ? bP_A_ext[t] : null,
-        Y1: (Y[0] / Y_base_absolute[0]) * 100, Y2: (Y[1] / Y_base_absolute[1]) * 100, Y3: n === 3 ? (Y[2] / Y_base_absolute[2]) * 100 : 0,
+        Y1: (Y[0] / Y_initial_absolute[0]) * 100, Y2: (Y[1] / Y_initial_absolute[1]) * 100, Y3: n === 3 ? (Y[2] / Y_initial_absolute[2]) * 100 : 0,
         r1: r_real[0] * 100, r2: r_real[1] * 100, r3: (r_real[2] || 0) * 100,
         s1: s_guess[0], s2: s_guess[1], s3: s_guess[2] || 0,
         sh1: wealth_share[0], sh2: wealth_share[1], sh3: wealth_share[2] || 0,
