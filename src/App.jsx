@@ -1,12 +1,35 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, AreaChart, Area, Legend
+  ReferenceLine, AreaChart, Area
 } from 'recharts';
 import {
   Globe, Activity, TrendingUp, Layers, RefreshCw,
   ChevronRight, Database, TrendingDown, BookOpen, Zap, Timer, PauseCircle, LayoutGrid, ChevronDown, Clock, Scale, Info
 } from 'lucide-react';
+
+// --- DATA & CONSTANTS ---
+
+const COUNTRY_DATA = {
+  'USA': { pop: 335, gdp_pc: 80000, name: 'United States' },
+  'CHN': { pop: 1410, gdp_pc: 12500, name: 'China' },
+  'DEU': { pop: 84, gdp_pc: 52000, name: 'Germany' },
+  'IND': { pop: 1430, gdp_pc: 2500, name: 'India' },
+  'BRA': { pop: 215, gdp_pc: 9000, name: 'Brazil' },
+  'JPN': { pop: 125, gdp_pc: 34000, name: 'Japan' },
+  'GBR': { pop: 67, gdp_pc: 46000, name: 'United Kingdom' },
+  'FRA': { pop: 68, gdp_pc: 41000, name: 'France' },
+  'NGA': { pop: 220, gdp_pc: 2200, name: 'Nigeria' },
+  'IDN': { pop: 275, gdp_pc: 4500, name: 'Indonesia' },
+  'ROW': { pop: 3500, gdp_pc: 5000, name: 'Rest of World' } 
+};
+
+const SCENARIOS = [
+  { id: 'hype', name: 'Scenario 1: Hype' },
+  { id: 'tidal', name: 'Scenario 2: Tidal Flow' },
+  { id: 'logjam', name: 'Scenario 3: Logjam' },
+  { id: 'gulf', name: 'Scenario 4: The Gulf' }
+];
 
 // --- ROBUST NUMERICAL UTILITIES ---
 
@@ -40,8 +63,6 @@ const get_r = (k, bt, rho, gamma, A, L, delta) => {
   return (gamma + (1 - gamma) * share) * y_over_k - delta;
 };
 
-// --- MARKET SOLVERS ---
-
 const solve_ki_for_r = (target_r, bt, delta, A, L, gamma, rho) => {
   return fzero((k) => get_r(k, bt, rho, gamma, A, L, delta) - target_r, 1e-6, 1e8);
 };
@@ -61,19 +82,127 @@ const solve_n_country_market = (V_vec, bt_vec, delta, A_vec, L_vec, gamma, rho, 
   return get_Ki(r_star);
 };
 
-const SCENARIOS = [
-  { id: 'hype', name: 'Scenario 1: Hype' },
-  { id: 'tidal', name: 'Scenario 2: Tidal Flow' },
-  { id: 'logjam', name: 'Scenario 3: Logjam' },
-  { id: 'gulf', name: 'Scenario 4: The Gulf' }
-];
+// --- HELPER UI COMPONENTS ---
+
+function VisualLegendItem({ color, label, type }) {
+  return (
+    <div className="flex items-center space-x-3">
+      <svg width="24" height="2" className="overflow-visible">
+        <line 
+          x1="0" y1="1" x2="24" y2="1" 
+          stroke={color} 
+          strokeWidth="2.5" 
+          strokeDasharray={type === 'dashed' ? "4 2" : type === 'short-dash' ? "2 2" : "0"}
+        />
+      </svg>
+      <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">{label}</span>
+    </div>
+  );
+}
+
+function ParamSlider({ label, val, min, max, step, onChange, icon, desc, disabled }) {
+  return (
+    <div className={`space-y-2 animate-in fade-in slide-in-from-left-2 duration-300 ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
+      <div className="flex justify-between items-center text-[9px] font-black text-slate-600 tracking-tight">
+        <div className="flex items-center space-x-1">{icon}<span>{label.toUpperCase()}</span></div>
+        <span className="font-mono text-blue-700 bg-blue-100/50 px-1.5 py-0.5 rounded-md border border-blue-200/50">{val}</span>
+      </div>
+      <div className="relative flex items-center h-5">
+        <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 shadow-sm" />
+      </div>
+      {desc && <p className="text-[8.5px] text-slate-400 font-bold italic leading-tight tracking-tight pl-1">{desc}</p>}
+    </div>
+  );
+}
+
+function ChartBlock({ title, children, desc }) {
+  return (
+    <div className="bg-white p-3 border border-slate-300 shadow-sm rounded-sm flex flex-col h-full">
+      <div className="text-[8px] font-black text-slate-500 uppercase tracking-tighter mb-2 flex justify-between">{title}</div>
+      <div className="flex-1">{children}</div>
+      {desc && <p className="mt-2 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-1 tracking-tight leading-tight">{desc}</p>}
+    </div>
+  );
+}
+
+function CustomTooltip({ active, payload, label }) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white border border-slate-300 p-2 text-[9px] font-bold shadow-xl">
+        <div className="mb-1 text-slate-400 uppercase tracking-widest border-b pb-1">Period {label}</div>
+        {payload.map((entry, i) => (
+          <div key={i} className="flex justify-between space-x-4">
+            <span style={{ color: entry.color }}>{entry.name || entry.dataKey}:</span>
+            <span className="font-mono">{entry.value.toFixed(3)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return null;
+}
+
+function LegendItem({ color, label }) {
+  return (
+    <div className="flex items-center space-x-2">
+      <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
+      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
+    </div>
+  );
+}
+
+function AboutSection({ leaderCode, followerCode, calibrationMode }) {
+  return (
+    <div className="max-w-3xl mx-auto space-y-10 py-10 px-4 bg-white border border-slate-200 shadow-sm rounded-lg">
+      <div className="border-b pb-6">
+        <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Technical Overview</h2>
+        <p className="text-slate-500 font-medium">Modeling Task-Based Automation & Cross-Border Capital Shifts</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <section className="space-y-3">
+          <h3 className="text-xs font-black uppercase text-blue-600 flex items-center"><Layers className="w-4 h-4 mr-2" /> Production Function</h3>
+          <div className="text-sm text-slate-600 leading-relaxed">
+            The engine uses a task-based framework where output is produced by capital and labor across a continuum of tasks. Automation ($\beta$) shifts tasks from labor to capital.
+            <div className="my-2 p-2 bg-slate-50 rounded font-mono text-center font-mono text-[10px]">
+              {'Y = A * K^gamma * [(beta^(1-rho) * K^rho + (1-beta)^(1-rho) * L^rho)^(1/rho)]^(1-gamma)'}
+            </div>
+          </div>
+        </section>
+        <section className="space-y-3">
+          <h3 className="text-xs font-black uppercase text-indigo-600 flex items-center"><TrendingUp className="w-4 h-4 mr-2" /> Global Market Clearing</h3>
+          <p className="text-sm text-slate-600 leading-relaxed">Capital flows globally to equalize <strong>net</strong> returns. Investors face a friction ($\omega$) when moving capital across borders.</p>
+        </section>
+        <section className="space-y-3">
+          <h3 className="text-xs font-black uppercase text-red-600 flex items-center"><TrendingDown className="w-4 h-4 mr-2" /> Data-Driven Calibration</h3>
+          <p className="text-sm text-slate-600 leading-relaxed">
+            {calibrationMode === 'real' ? (
+              <span>Current settings use real-world populations and GDP per capita to anchor <strong>{leaderCode}</strong>, <strong>{followerCode}</strong>, and <strong>ROW</strong> in a global framework.</span>
+            ) : (
+              <span>Calibrates productivity (A) based on abstract output-per-capita targets to study pure transition dynamics.</span>
+            )}
+          </p>
+        </section>
+        <section className="space-y-3">
+          <h3 className="text-xs font-black uppercase text-emerald-600 flex items-center"><Clock className="w-4 h-4 mr-2" /> Rational Foresight</h3>
+          <p className="text-sm text-slate-600 leading-relaxed">Agents adjust savings rates based on projected future returns (t+l), ensuring investment today is rationalized by the future global landscape.</p>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// --- MAIN APPLICATION ---
 
 const App = () => {
   const [activeView, setActiveView] = useState('dashboard');
   const [mode, setMode] = useState('3C'); 
+  const [calibrationMode, setCalibrationMode] = useState('abstract'); 
   const [activeScenario, setActiveScenario] = useState('tidal');
   const [activeParamCategory, setActiveParamCategory] = useState('temporal');
   
+  const [leaderCode, setLeaderCode] = useState('USA');
+  const [followerCode, setFollowerCode] = useState('CHN');
+
   const [params, setParams] = useState({
     sigma: 0.4, delta: 0.05, phi: 0.25, gamma: 0.33,
     r_target: 0.04, l: 3, periods: 50,
@@ -97,7 +226,7 @@ const App = () => {
   const simulationResults = useMemo(() => {
     const { 
       sigma, delta, phi, gamma, r_target, l, w1, w2, w3, g1, g2, g3, periods: T_sim,
-      target_y_ratio_A, target_y_ratio_B,
+      target_y_ratio_A: abstract_yA, target_y_ratio_B: abstract_yB,
       hype_realized_max, hype_perc_peak, hype_trough_depth,
       tidal_max, tidal_lag_B, tidal_midpoint, tidal_steepness,
       logjam_max, logjam_lag_B, logjam_mid1, logjam_plateau_dur,
@@ -109,12 +238,25 @@ const App = () => {
     const n = mode === '2C' ? 2 : 3;
     const b_start = 0.001;
 
-    const L_A = 5.0; 
-    const L_C = 1.0;
-    const L_B = 3.0;
-    const L_vec = n === 2 ? [L_A, 2.5] : [L_A, L_B, L_C];
-    const w_vec = n === 2 ? [w1, w2] : [w1, w2, w3];
+    let L_vec, final_y_ratio_A, final_y_ratio_B;
 
+    if (calibrationMode === 'real') {
+      const leader = COUNTRY_DATA[leaderCode];
+      const follower = COUNTRY_DATA[followerCode];
+      const row = COUNTRY_DATA['ROW'];
+      const base_scale = row.pop;
+      L_vec = n === 2 
+        ? [leader.pop / base_scale, follower.pop / base_scale]
+        : [leader.pop / base_scale, follower.pop / base_scale, row.pop / base_scale];
+      final_y_ratio_A = leader.gdp_pc / row.gdp_pc;
+      final_y_ratio_B = follower.gdp_pc / row.gdp_pc;
+    } else {
+      L_vec = n === 2 ? [5.0, 2.5] : [5.0, 3.0, 1.0];
+      final_y_ratio_A = abstract_yA;
+      final_y_ratio_B = abstract_yB;
+    }
+
+    const w_vec = n === 2 ? [w1, w2] : [w1, w2, w3];
     const A0_numeraire = 1.0;
     const k_ss_num = solve_ki_for_r(r_target, b_start, delta, A0_numeraire, 1.0, gamma, rho);
     const y_ss_num = get_y(k_ss_num, b_start, rho, gamma, A0_numeraire, 1.0);
@@ -124,13 +266,12 @@ const App = () => {
       return fzero((a_guess) => {
         const k_local = solve_ki_for_r(r_target, b_start, delta, a_guess, 1.0, gamma, rho);
         return get_y(k_local, b_start, rho, gamma, a_guess, 1.0) - target_y;
-      }, 0.1, 10.0);
+      }, 0.01, 50.0);
     };
 
-    const A0_A = findA0(target_y_ratio_A);
-    const A0_B = findA0(target_y_ratio_B);
+    const A0_A = findA0(final_y_ratio_A);
+    const A0_B = findA0(final_y_ratio_B);
     const A0_vec = n === 2 ? [A0_A, A0_numeraire] : [A0_A, A0_B, A0_numeraire];
-
     const A_paths = A0_vec.map((a0, i) => Array.from({ length: T_full + 1 }, (_, t) => a0 * Math.pow(1 + [g1, g2, g3][i], t)));
     const K_init_pc = A0_vec.map(a => solve_ki_for_r(r_target, b_start, delta, a, 1.0, gamma, rho));
     const Y_init_pc = K_init_pc.map((ki, i) => get_y(ki, b_start, rho, gamma, A0_vec[i], 1.0));
@@ -175,6 +316,7 @@ const App = () => {
     let s_guess = [...s_base_vec];
     const b_paths_ext = beta_paths.map(p => [...p, ...Array(l + 10).fill(p[T_full])]);
     const b_perc_ext = [...beta_perc_L, ...Array(l + 10).fill(beta_perc_L[T_full])];
+    
     let Y_prev = Array(n).fill(0).map((_, i) => get_y(K_init_pc[i] * L_vec[i], b_start, rho, gamma, A0_vec[i], L_vec[i]));
     let GNI_init = [];
 
@@ -230,7 +372,6 @@ const App = () => {
       }
       pipelines.forEach((p, i) => { p[t + l] = s_guess[i] * GNI[i]; });
 
-      // Portfolio Evolution
       P = P.map(row => row.map(v => v * (1 - delta)));
       for (let i = 0; i < n; i++) P[i][i] += pipelines[i][t + 1];
       const V_new = P.map(row => row.reduce((a, b) => a + b, 0));
@@ -238,16 +379,18 @@ const App = () => {
       const A_next = A_paths.map(p => p[Math.min(T_full, t + 1)]);
       const K_target = solve_n_country_market(V_new, bt_next, delta, A_next, L_vec, gamma, rho, w_vec);
       const V_tot_new = V_new.reduce((a, b) => a + b, 0);
-      for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (V_tot_new > 1e-9) P[r][c] = V_new[r] * (K_target[c] / V_tot_new);
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          if (V_tot_new > 1e-9) P[r][c] = V_new[r] * (K_target[c] / V_tot_new);
+        }
+      }
 
-      // Revenue: location loc taxes all foreign-owned capital in its borders
       const endPeriodRev = Array(n).fill(0).map((_, loc) => {
         let tax_base = 0;
         for (let owner = 0; owner < n; owner++) if (owner !== loc) tax_base += P[owner][loc];
         return tax_base * w_vec[loc];
       });
 
-      // Net Rentier Position
       const netRentierIncome = Array(n).fill(0).map((_, k) => {
         let fromAbroad = 0, paidToForeigners = 0;
         for (let m = 0; m < n; m++) {
@@ -271,6 +414,7 @@ const App = () => {
         ls1: (labor_inc[0] / GNI[0]) * 100, ls2: (labor_inc[1] / GNI[1]) * 100, ls3: (labor_inc[2] ? labor_inc[2] / GNI[2] : 0) * 100,
         sg2: starvation[1] * 100, sg3: starvation[2] ? starvation[2] * 100 : 0,
         rawRev: endPeriodRev,
+        rawK: [...K_curr],
         GNI1: GNI[0] / GNI_init[0] * 100, GNI2: GNI[1] / GNI_init[1] * 100, GNI3: (GNI[2] || 1) / (GNI_init[2] || 1) * 100,
         rent1: (netRentierIncome[0] / GNI[0]) * 100, rent2: (netRentierIncome[1] / GNI[1]) * 100, rent3: n === 3 ? (netRentierIncome[2] / GNI[2]) * 100 : 0,
         gni_parts: GNI_parts
@@ -279,14 +423,18 @@ const App = () => {
 
     const h1 = history.find(h => h.t === 1) || history[0];
     const baseRev = [Math.max(1e-12, h1.rawRev[0]), Math.max(1e-12, h1.rawRev[1]), Math.max(1e-12, h1.rawRev[2])];
+    const baseK = [Math.max(1e-12, h1.rawK[0]), Math.max(1e-12, h1.rawK[1]), Math.max(1e-12, h1.rawK[2])];
 
     return history.map(h => ({
       ...h,
       rev1: (h.rawRev[0] / baseRev[0]) * 100,
       rev2: (h.rawRev[1] / baseRev[1]) * 100,
-      rev3: n === 3 ? (h.rawRev[2] / baseRev[2]) * 100 : 0
+      rev3: n === 3 ? (h.rawRev[2] / baseRev[2]) * 100 : 0,
+      k1: (h.rawK[0] / baseK[0]) * 100,
+      k2: (h.rawK[1] / baseK[1]) * 100,
+      k3: n === 3 ? (h.rawK[2] / baseK[2]) * 100 : 0
     }));
-  }, [mode, activeScenario, params]);
+  }, [mode, activeScenario, params, calibrationMode, leaderCode, followerCode]);
 
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900">
@@ -294,20 +442,47 @@ const App = () => {
         <div className="p-4 border-b border-slate-200 flex items-center space-x-3 bg-slate-900 text-white font-black uppercase tracking-widest text-[11px]">
           <Globe className="w-5 h-5 text-blue-400" /><span>Simulation Engine</span>
         </div>
-        
         <div className="flex-1 overflow-y-auto p-5 space-y-6 scrollbar-hide">
+          <div className="space-y-3 pb-4 border-b border-slate-100">
+             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">System Mode</label>
+             <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
+                <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Abstract</button>
+                <button onClick={() => setCalibrationMode('real')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'real' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}>Real-World</button>
+             </div>
+          </div>
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
             {['2C', '3C'].map(m => (
               <button key={m} onClick={() => setMode(m)} className={`py-1.5 text-[10px] font-black uppercase rounded-md transition-all ${mode === m ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>{m === '2C' ? '2-Country' : '3-Country'}</button>
             ))}
           </div>
-
           <div className="flex bg-slate-100 p-1 rounded-lg">
             {['dashboard', 'about'].map(v => (
               <button key={v} onClick={() => setActiveView(v)} className={`flex-1 py-2 text-[10px] font-black uppercase rounded-md transition-all ${activeView === v ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}>{v}</button>
             ))}
           </div>
-
+          {calibrationMode === 'real' && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">1. Select Leader</label>
+                <select value={leaderCode} onChange={e => setLeaderCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
+                  <option value="USA">United States (80k GDP pc)</option>
+                  <option value="CHN">China (12.5k GDP pc)</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">2. Select Follower</label>
+                <select value={followerCode} onChange={e => setFollowerCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
+                  {Object.keys(COUNTRY_DATA).filter(k => k !== leaderCode && k !== 'ROW').map(code => (
+                    <option key={code} value={code}>{COUNTRY_DATA[code].name} ({COUNTRY_DATA[code].gdp_pc / 1000}k GDP pc)</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1 opacity-50">
+                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">3. ROW (Default)</label>
+                <div className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg bg-slate-50">Rest of World (Laggard)</div>
+              </div>
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2">Active Scenario</label>
             <div className="grid grid-cols-1 gap-2">
@@ -316,7 +491,6 @@ const App = () => {
               ))}
             </div>
           </div>
-
           <div className="space-y-3 pt-4 border-t border-slate-100">
             <div className="relative">
               <select value={activeParamCategory} onChange={(e) => setActiveParamCategory(e.target.value)} className="w-full p-2 text-xs font-black uppercase border border-slate-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10 shadow-sm cursor-pointer">
@@ -336,8 +510,8 @@ const App = () => {
               )}
               {activeParamCategory === 'size' && (
                 <>
-                  <ParamSlider label="Output Target A" val={params.target_y_ratio_A} min={1} max={3} step={0.1} onChange={v => setParams({...params, target_y_ratio_A: v})} icon={<Activity className="w-3 h-3 text-blue-500" />} />
-                  {mode === '3C' && <ParamSlider label="Output Target B" val={params.target_y_ratio_B} min={1} max={2.5} step={0.1} onChange={v => setParams({...params, target_y_ratio_B: v})} />}
+                  <ParamSlider label="Output Target A" val={params.target_y_ratio_A} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_A: v})} icon={<Activity className="w-3 h-3 text-blue-500" />} />
+                  {mode === '3C' && <ParamSlider label="Output Target B" val={params.target_y_ratio_B} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_B: v})} />}
                 </>
               )}
               {activeParamCategory === 'frictions' && (
@@ -356,8 +530,7 @@ const App = () => {
               )}
             </div>
           </div>
-
-          <div className="pt-4 border-t border-slate-100">
+          <div className="pt-4 border-t border-slate-100 pb-8">
             <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100/80 shadow-inner">
               <div className="flex items-center space-x-2.5 pb-3">
                 <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
@@ -366,29 +539,29 @@ const App = () => {
               <div className="space-y-7">
                 {activeScenario === 'hype' && (
                   <>
-                    <ParamSlider label="Hype Peak" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Perceived adoption level at bubble peak." />
-                    <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="Actual technological saturation point." />
-                    <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Magnitude of correction post-hype." />
+                    <ParamSlider label="Hype Peak" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Bubble adoption level." />
+                    <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="True tech ceiling." />
+                    <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Correction magnitude." />
                   </>
                 )}
                 {activeScenario === 'tidal' && (
                   <>
-                    <ParamSlider label="Max Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Final tech adoption level." />
-                    <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={25} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Time delay for Follower catch-up." />
-                    <ParamSlider label="Diffusion Midpoint" val={params.tidal_midpoint} min={5} max={30} step={1} onChange={v => setParams({...params, tidal_midpoint: v})} desc="Timing of maximum catch-up rate." />
+                    <ParamSlider label="Max Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Final tech adoption." />
+                    <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={25} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Catch-up delay." />
+                    <ParamSlider label="Diffusion Mid" val={params.tidal_midpoint} min={5} max={30} step={1} onChange={v => setParams({...params, tidal_midpoint: v})} desc="Max diffusion speed." />
                   </>
                 )}
                 {activeScenario === 'logjam' && (
                   <>
-                    <ParamSlider label="Max Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Final technology saturation level." />
-                    <ParamSlider label="Plateau Duration" val={params.logjam_plateau_dur} min={1} max={20} step={1} onChange={v => setParams({...params, logjam_plateau_dur: v})} desc="Length of the adoption stall." />
-                    <ParamSlider label="Follower Lag" val={params.logjam_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, logjam_lag_B: v})} desc="Catch-up delay during the logjam." />
+                    <ParamSlider label="Max Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Saturation level." />
+                    <ParamSlider label="Plateau Dur." val={params.logjam_plateau_dur} min={1} max={20} step={1} onChange={v => setParams({...params, logjam_plateau_dur: v})} desc="Adoption stall duration." />
+                    <ParamSlider label="Follower Lag" val={params.logjam_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, logjam_lag_B: v})} desc="Catch-up delay." />
                   </>
                 )}
                 {activeScenario === 'gulf' && (
                   <>
                     <ParamSlider label="Max Saturation" val={params.gulf_max} min={0.5} max={1.0} step={0.05} onChange={v => setParams({...params, gulf_max: v})} desc="Leader adoption ceiling." />
-                    <ParamSlider label="Leakage to B" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Follower access to tech as % of Leader." />
+                    <ParamSlider label="Leakage to B" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Tech access for Follower." />
                   </>
                 )}
               </div>
@@ -396,105 +569,86 @@ const App = () => {
           </div>
         </div>
       </aside>
-
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="h-10 bg-white border-b border-slate-300 px-6 flex items-center justify-between shadow-sm shrink-0">
           <h2 className="text-[10px] font-black uppercase tracking-[0.2em]">Live Modeling Interface</h2>
           <div className="flex items-center space-x-2 px-3 py-1 bg-blue-50 text-blue-700 rounded-full border border-blue-100">
             <Activity className="w-3 h-3" />
-            <span className="text-[9px] font-black uppercase">{mode} GROWTH DYNAMICS</span>
+            <span className="text-[9px] font-black uppercase">{mode} {calibrationMode === 'real' ? 'REAL-WORLD' : 'ABSTRACT'} ENGINE</span>
           </div>
         </header>
-        
         <div className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
           {activeView === 'dashboard' ? (
             <>
-              {/* GLOBAL EXPLAINER BOX */}
               <div className="bg-white border border-slate-300 p-5 rounded-sm shadow-sm">
                 <div className="flex items-start space-x-4">
                   <div className="bg-indigo-600 p-2 rounded text-white"><Info className="w-4 h-4" /></div>
-                  <div className="flex-1">
+                  <div className="flex-1 text-[11px] text-slate-600 leading-relaxed max-w-4xl">
                     <h3 className="text-[10px] font-black uppercase text-slate-800 tracking-widest mb-2">Model Context</h3>
-                    <p className="text-[11px] text-slate-600 leading-relaxed max-w-4xl">
-                      {mode === '3C' ? (
-                        <>
-                          This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> automates tasks, its domestic returns to capital surge, pulling investment away from <span className="font-bold text-red-600">Follower</span> and <span className="font-bold text-slate-900">Laggard</span> regions. This causes divergence in wealth and wages until technology diffuses across the global economy.
-                        </>
-                      ) : (
-                        <>
-                          This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> automates tasks, its domestic returns to capital surge, pulling investment away from the <span className="font-bold text-red-600">Follower</span> region. This causes divergence in wealth and wages until technology diffuses across the global economy.
-                        </>
-                      )}
-                    </p>
+                    {mode === '3C' ? (
+                      <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> ({calibrationMode === 'real' ? leaderCode : 'A'}) automates tasks, its domestic returns to capital surge, pulling investment away from <span className="font-bold text-red-600">Follower</span> ({calibrationMode === 'real' ? followerCode : 'B'}) and <span className="font-bold text-slate-900">Laggard</span> ({calibrationMode === 'real' ? 'ROW' : 'C'}) regions. This causes divergence in wealth and wages until technology diffuses across the global economy.</span>
+                    ) : (
+                      <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> ({calibrationMode === 'real' ? leaderCode : 'A'}) automates tasks, its domestic returns to capital surge, pulling investment away from the <span className="font-bold text-red-600">Follower</span> ({calibrationMode === 'real' ? followerCode : 'B'}) region. This causes divergence in wealth and wages until technology diffuses across the global economy.</span>
+                    )}
                   </div>
-                  {/* VISUAL LEGEND */}
                   <div className="flex flex-col space-y-3 pl-6 border-l border-slate-100 shrink-0">
-                    <VisualLegendItem color="#2563eb" label="Leader" type="solid" />
-                    <VisualLegendItem color="#dc2626" label="Follower" type="solid" />
-                    {mode === '3C' && <VisualLegendItem color="#000000" label="Laggard" type="dashed" />}
+                    <VisualLegendItem color="#2563eb" label={calibrationMode === 'real' ? leaderCode : 'Leader'} type="solid" />
+                    <VisualLegendItem color="#dc2626" label={calibrationMode === 'real' ? followerCode : 'Follower'} type="solid" />
+                    {mode === '3C' && <VisualLegendItem color="#000000" label={calibrationMode === 'real' ? 'ROW' : 'Laggard'} type="dashed" />}
                     {activeScenario === 'hype' && <VisualLegendItem color="#2563eb" label="Perceived" type="short-dash" />}
                   </div>
                 </div>
               </div>
-
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <ChartBlock title="Tech Adoption (β)" desc="Percentage of work tasks performed by machines rather than humans.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="beta1" name="Leader" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="beta2" name="Follower" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="beta3" name="Laggard" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}{activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
+                <ChartBlock title="Tech Adoption (β)" desc="Percentage of tasks done by machines.">
+                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="beta1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="beta2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="beta3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}{activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Output Growth Rate (%)" desc="The speed at which the total national economy is expanding each period.">
+                <ChartBlock title="Output Growth Rate (%)" desc="Periodic expansion speed of the economy.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" /><Line type="monotone" dataKey="dY1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="dY2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="dY3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Starvation Gap (%)" desc="Economic loss due to domestic technology lagging behind the global leader.">
+                <ChartBlock title="Capital Stock Index (K)" desc="Machinery value located in country (Base=100).">
+                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="k1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="k2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="k3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
+                </ChartBlock>
+                <ChartBlock title="Starvation Gap (%)" desc="Economic loss due to domestic technology lag.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><ReferenceLine y={0} stroke="#94a3b8" /><Line type="monotone" dataKey="sg2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="sg3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Savings Rate (s)" desc="The portion of income residents set aside to buy new machines for growth.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="s1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="s2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="s3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
               </div>
-
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <ChartBlock title="Realized Returns (%)" desc="Net profit earned from machinery after accounting for depreciation.">
+                <ChartBlock title="Realized Returns (%)" desc="Net profit earned from machinery.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="r1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="r2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="r3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Wealth Share % (p.c.)" desc="Value of machines owned per resident relative to the global average.">
+                <ChartBlock title="Wealth Share % (p.c.)" desc="Value of machines owned relative to global average.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="sh1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="sh2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="GNI Index" desc="Total citizen income, including earnings from machines owned abroad.">
+                <ChartBlock title="GNI Index" desc="Total citizen income index.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="GNI1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="GNI2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="GNI3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Rentier Index (% GNI)" desc="Net profit from foreign machine ownership as a share of the economy.">
+                <ChartBlock title="Rentier Index (% GNI)" desc="Net profit from foreign machine ownership.">
                   <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><ReferenceLine y={0} stroke="#94a3b8" /><Line type="monotone" dataKey="rent1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="rent2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="rent3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
               </div>
-
               <div className="grid grid-cols-2 gap-4">
-                <ChartBlock title="Labour Share of GNI (%)" desc="The portion of national income paid out as wages to domestic workers.">
+                <ChartBlock title="Labour Share of GNI (%)" desc="Portion of income paid as wages.">
                   <ResponsiveContainer width="100%" height={140}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="ls1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="ls2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
-                <ChartBlock title="Government Revenue Index (Base=100 at t=1)" desc="Income collected from foreign machines operating within national borders.">
+                <ChartBlock title="Government Revenue Index (Base=100 at t=1)" desc="Income from taxing foreign machine operation.">
                   <ResponsiveContainer width="100%" height={140}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><ReferenceLine y={100} stroke="#94a3b8" strokeDasharray="3 3" /><Line type="monotone" dataKey="rev1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="rev2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="rev3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
                 </ChartBlock>
               </div>
-
               <div className="bg-white p-6 border border-slate-300 rounded-sm shadow-sm">
                 <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xs font-black uppercase text-slate-500 tracking-widest flex items-center">
-                    <LayoutGrid className="w-4 h-4 mr-2 text-indigo-500" /> GNI Decomposition (Per Capita)
-                  </h3>
+                  <h3 className="text-xs font-black uppercase text-slate-500 tracking-widest flex items-center"><LayoutGrid className="w-4 h-4 mr-2 text-indigo-500" /> GNI Decomposition (Per Capita)</h3>
                   <div className="flex space-x-6">
-                    <LegendItem color="#cc4c4c" label="Labor" />
-                    <LegendItem color="#4c4ccc" label="Domestic Capital" />
-                    <LegendItem color="#4ccc4c" label="Foreign Capital" />
+                    <LegendItem color="#cc4c4c" label="Labor" /><LegendItem color="#4c4ccc" label="Domestic Capital" /><LegendItem color="#4ccc4c" label="Foreign Capital" />
                   </div>
                 </div>
                 <div className={`grid ${mode === '2C' ? 'grid-cols-2' : 'grid-cols-3'} gap-6`}>
                   {[...Array(mode === '2C' ? 2 : 3)].map((_, c) => (
                     <div key={c} className="space-y-2">
-                      <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Country {String.fromCharCode(65+c)}</div>
+                      <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? (calibrationMode === 'real' ? leaderCode : 'A') : (c === 1 ? (calibrationMode === 'real' ? followerCode : 'B') : 'ROW')}</div>
                       <ResponsiveContainer width="100%" height={180}>
                         <AreaChart data={simulationResults.map(h => ({ t: h.t, ...h.gni_parts[c] }))} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide />
-                          <YAxis fontSize={8} domain={['auto', 'auto']} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={['auto', 'auto']} />
                           <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} />
                           <Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} />
                           <Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} />
@@ -506,102 +660,11 @@ const App = () => {
                 <p className="mt-4 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-2 tracking-tight text-center">Breakdown of total income into labor wages and profits earned from domestic or foreign machine ownership.</p>
               </div>
             </>
-          ) : <AboutSection />}
+          ) : <AboutSection leaderCode={leaderCode} followerCode={followerCode} calibrationMode={calibrationMode} />}
         </div>
       </main>
     </div>
   );
 };
-
-const VisualLegendItem = ({ color, label, type }) => (
-  <div className="flex items-center space-x-3">
-    <svg width="24" height="2" className="overflow-visible">
-      <line 
-        x1="0" y1="1" x2="24" y2="1" 
-        stroke={color} 
-        strokeWidth="2.5" 
-        strokeDasharray={type === 'dashed' ? "4 2" : type === 'short-dash' ? "2 2" : "0"}
-      />
-    </svg>
-    <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">{label}</span>
-  </div>
-);
-
-const ParamSlider = ({ label, val, min, max, step, onChange, icon, desc }) => (
-  <div className="space-y-2 animate-in fade-in slide-in-from-left-2 duration-300">
-    <div className="flex justify-between items-center text-[9px] font-black text-slate-600 tracking-tight">
-      <div className="flex items-center space-x-1">{icon}<span>{label.toUpperCase()}</span></div>
-      <span className="font-mono text-blue-700 bg-blue-100/50 px-1.5 py-0.5 rounded-md border border-blue-200/50">{val}</span>
-    </div>
-    <div className="relative flex items-center h-5">
-      <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 shadow-sm" />
-    </div>
-    {desc && <p className="text-[8.5px] text-slate-400 font-bold italic leading-tight tracking-tight pl-1">{desc}</p>}
-  </div>
-);
-
-const ChartBlock = ({ title, children, desc }) => (
-  <div className="bg-white p-3 border border-slate-300 shadow-sm rounded-sm flex flex-col h-full">
-    <div className="text-[8px] font-black text-slate-500 uppercase tracking-tighter mb-2 flex justify-between">{title}</div>
-    <div className="flex-1">{children}</div>
-    {desc && <p className="mt-2 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-1 tracking-tight leading-tight">{desc}</p>}
-  </div>
-);
-
-const CustomTooltip = ({ active, payload, label }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="bg-white border border-slate-300 p-2 text-[9px] font-bold shadow-xl">
-        <div className="mb-1 text-slate-400 uppercase tracking-widest border-b pb-1">Period {label}</div>
-        {payload.map((entry, i) => (
-          <div key={i} className="flex justify-between space-x-4">
-            <span style={{ color: entry.color }}>{entry.name}:</span>
-            <span className="font-mono">{entry.value.toFixed(3)}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return null;
-};
-
-const LegendItem = ({ color, label }) => (
-  <div className="flex items-center space-x-2">
-    <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
-    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
-  </div>
-);
-
-const AboutSection = () => (
-  <div className="max-w-3xl mx-auto space-y-10 py-10 px-4 bg-white border border-slate-200 shadow-sm rounded-lg">
-    <div className="border-b pb-6">
-      <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Technical Overview</h2>
-      <p className="text-slate-500 font-medium">Modeling Task-Based Automation & Cross-Border Capital Shifts</p>
-    </div>
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-      <section className="space-y-3">
-        <h3 className="text-xs font-black uppercase text-blue-600 flex items-center"><Layers className="w-4 h-4 mr-2" /> Production Function</h3>
-        <div className="text-sm text-slate-600 leading-relaxed">
-          The engine uses a task-based framework where output is produced by capital and labor across a continuum of tasks. Automation ($\beta$) shifts tasks from labor to capital.
-          <div className="my-2 p-2 bg-slate-50 rounded font-mono text-center font-mono text-[10px]">
-            {'Y = A * K^gamma * [(beta^(1-rho) * K^rho + (1-beta)^(1-rho) * L^rho)^(1/rho)]^(1-gamma)'}
-          </div>
-        </div>
-      </section>
-      <section className="space-y-3">
-        <h3 className="text-xs font-black uppercase text-indigo-600 flex items-center"><TrendingUp className="w-4 h-4 mr-2" /> Global Market Clearing</h3>
-        <p className="text-sm text-slate-600 leading-relaxed">Capital flows globally to equalize <strong>net</strong> returns. Investors face a friction ($\omega$) when moving capital across borders.</p>
-      </section>
-      <section className="space-y-3">
-        <h3 className="text-xs font-black uppercase text-red-600 flex items-center"><TrendingDown className="w-4 h-4 mr-2" /> The Starvation Gap</h3>
-        <p className="text-sm text-slate-600 leading-relaxed">A counterfactual metric: the percentage of capital a country "loses" because its technological level lags behind the global frontier.</p>
-      </section>
-      <section className="space-y-3">
-        <h3 className="text-xs font-black uppercase text-emerald-600 flex items-center"><Clock className="w-4 h-4 mr-2" /> Rational Foresight</h3>
-        <p className="text-sm text-slate-600 leading-relaxed">Agents adjust savings rates based on projected future returns ($t+l$), ensuring investment today is rationalized by the future global landscape.</p>
-      </section>
-    </div>
-  </div>
-);
 
 export default App;
