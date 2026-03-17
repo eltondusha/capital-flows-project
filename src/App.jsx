@@ -1,670 +1,798 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, AreaChart, Area
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  AreaChart,
+  Area,
+  ReferenceArea,
 } from 'recharts';
-import {
-  Globe, Activity, TrendingUp, Layers, RefreshCw,
-  ChevronRight, Database, TrendingDown, BookOpen, Zap, Timer, PauseCircle, LayoutGrid, ChevronDown, Clock, Scale, Info
-} from 'lucide-react';
+import { Globe, SlidersHorizontal, TrendingUp, Landmark, RefreshCw } from 'lucide-react';
 
-// --- DATA & CONSTANTS ---
-
-const COUNTRY_DATA = {
-  'USA': { pop: 335, gdp_pc: 80000, name: 'United States' },
-  'CHN': { pop: 1410, gdp_pc: 12500, name: 'China' },
-  'DEU': { pop: 84, gdp_pc: 52000, name: 'Germany' },
-  'IND': { pop: 1430, gdp_pc: 2500, name: 'India' },
-  'BRA': { pop: 215, gdp_pc: 9000, name: 'Brazil' },
-  'JPN': { pop: 125, gdp_pc: 34000, name: 'Japan' },
-  'GBR': { pop: 67, gdp_pc: 46000, name: 'United Kingdom' },
-  'FRA': { pop: 68, gdp_pc: 41000, name: 'France' },
-  'NGA': { pop: 220, gdp_pc: 2200, name: 'Nigeria' },
-  'IDN': { pop: 275, gdp_pc: 4500, name: 'Indonesia' },
-  'ROW': { pop: 3500, gdp_pc: 5000, name: 'Rest of World' } 
-};
-
+const COLORS = ['#2563eb', '#dc2626', '#16a34a'];
+const COUNTRY_LABELS = ['A', 'B', 'C'];
 const SCENARIOS = [
   { id: 'hype', name: 'Scenario 1: Hype' },
   { id: 'tidal', name: 'Scenario 2: Tidal Flow' },
   { id: 'logjam', name: 'Scenario 3: Logjam' },
-  { id: 'gulf', name: 'Scenario 4: The Gulf' }
+  { id: 'gulf', name: 'Scenario 4: The Gulf' },
 ];
 
-// --- ROBUST NUMERICAL UTILITIES ---
+const DEFAULTS_2C = {
+  T: 60,
+  T_SIM: 40,
+  l: 3,
+  sigma: 0.4,
+  delta: 0.05,
+  gamma: 0.33,
+  rTarget: 0.04,
+  bStart: 0.001,
+  steepnessGen: 0.8,
+  targetYRatio: 1.5,
+  A0_B: 1.0,
+  L: [5.0, 2.5],
+  omega: [0.001, 0.002],
+  tau: [0.001, 0.002],
+};
 
-const fzero = (func, low, high, iterations = 100) => {
-  let fLow = func(low);
-  let fHigh = func(high);
-  if (fLow * fHigh > 0) return Math.abs(fLow) < Math.abs(fHigh) ? low : high;
-  let mid = 0;
-  for (let i = 0; i < iterations; i++) {
-    mid = (low + high) / 2;
-    let fMid = func(mid);
-    if (fMid * fLow <= 0) high = mid;
-    else { low = mid; fLow = fMid; }
-    if (Math.abs(high - low) < 1e-10) break;
+const DEFAULTS_3C = {
+  T: 60,
+  T_SIM: 40,
+  l: 3,
+  sigma: 0.4,
+  delta: 0.05,
+  gamma: 0.33,
+  rTarget: 0.04,
+  bStart: 0.001,
+  steepnessGen: 0.8,
+  targetY_A_to_C: 2.0,
+  targetY_B_to_C: 1.5,
+  A0_C: 1.0,
+  L: [5.0, 3.0, 1.0],
+  omega: [0.001, 0.001, 0.0],
+  tau: [0.0, 0.001, 0.001],
+};
+
+function sigmoid(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+function clampMin(x, eps = 1e-12) {
+  return Math.max(eps, x);
+}
+
+function fzero(func, low, high, iterations = 120) {
+  let a = low;
+  let b = high;
+  let fa = func(a);
+  let fb = func(b);
+  if (!Number.isFinite(fa) || !Number.isFinite(fb)) return (a + b) / 2;
+  if (fa === 0) return a;
+  if (fb === 0) return b;
+  if (fa * fb > 0) return Math.abs(fa) < Math.abs(fb) ? a : b;
+  let mid = (a + b) / 2;
+  for (let i = 0; i < iterations; i += 1) {
+    mid = (a + b) / 2;
+    const fm = func(mid);
+    if (!Number.isFinite(fm)) return mid;
+    if (Math.abs(fm) < 1e-10 || Math.abs(b - a) < 1e-10) return mid;
+    if (fa * fm <= 0) {
+      b = mid;
+      fb = fm;
+    } else {
+      a = mid;
+      fa = fm;
+    }
   }
   return mid;
-};
-
-// --- MATH ENGINE ---
-
-const get_y = (k, bt, rho, gamma, A, L) => {
-  const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
-  return A * Math.pow(k, gamma) * Math.pow(task_agg, (1 - gamma) / rho);
-};
-
-const get_r = (k, bt, rho, gamma, A, L, delta) => {
-  if (k <= 1e-12) return 0.5;
-  const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
-  const share = (Math.pow(bt, 1 - rho) * Math.pow(k, rho)) / task_agg;
-  const y_over_k = get_y(k, bt, rho, gamma, A, L) / k;
-  return (gamma + (1 - gamma) * share) * y_over_k - delta;
-};
-
-const solve_ki_for_r = (target_r, bt, delta, A, L, gamma, rho) => {
-  return fzero((k) => get_r(k, bt, rho, gamma, A, L, delta) - target_r, 1e-6, 1e8);
-};
-
-const solve_n_country_market = (V_vec, bt_vec, delta, A_vec, L_vec, gamma, rho, w_vec) => {
-  const n = V_vec.length;
-  const get_Ki = (r_ref) => {
-    return V_vec.map((v, i) => {
-      const r_at_v = get_r(v, bt_vec[i], rho, gamma, A_vec[i], L_vec[i], delta);
-      if (r_at_v < r_ref) return solve_ki_for_r(r_ref, bt_vec[i], delta, A_vec[i], L_vec[i], gamma, rho);
-      if (r_at_v > r_ref + w_vec[i]) return solve_ki_for_r(r_ref + w_vec[i], bt_vec[i], delta, A_vec[i], L_vec[i], gamma, rho);
-      return v;
-    });
-  };
-  const V_tot = V_vec.reduce((a, b) => a + b, 0);
-  const r_star = fzero((r) => get_Ki(r).reduce((a, b) => a + b, 0) - V_tot, -0.049, 5.0);
-  return get_Ki(r_star);
-};
-
-// --- HELPER UI COMPONENTS ---
-
-function VisualLegendItem({ color, label, type }) {
-  return (
-    <div className="flex items-center space-x-3">
-      <svg width="24" height="2" className="overflow-visible">
-        <line 
-          x1="0" y1="1" x2="24" y2="1" 
-          stroke={color} 
-          strokeWidth="2.5" 
-          strokeDasharray={type === 'dashed' ? "4 2" : type === 'short-dash' ? "2 2" : "0"}
-        />
-      </svg>
-      <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">{label}</span>
-    </div>
-  );
 }
 
-function ParamSlider({ label, val, min, max, step, onChange, icon, desc, disabled }) {
-  return (
-    <div className={`space-y-2 animate-in fade-in slide-in-from-left-2 duration-300 ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
-      <div className="flex justify-between items-center text-[9px] font-black text-slate-600 tracking-tight">
-        <div className="flex items-center space-x-1">{icon}<span>{label.toUpperCase()}</span></div>
-        <span className="font-mono text-blue-700 bg-blue-100/50 px-1.5 py-0.5 rounded-md border border-blue-200/50">{val}</span>
-      </div>
-      <div className="relative flex items-center h-5">
-        <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 shadow-sm" />
-      </div>
-      {desc && <p className="text-[8.5px] text-slate-400 font-bold italic leading-tight tracking-tight pl-1">{desc}</p>}
-    </div>
-  );
-}
-
-function ChartBlock({ title, children, desc }) {
-  return (
-    <div className="bg-white p-3 border border-slate-300 shadow-sm rounded-sm flex flex-col h-full">
-      <div className="text-[8px] font-black text-slate-500 uppercase tracking-tighter mb-2 flex justify-between">{title}</div>
-      <div className="flex-1">{children}</div>
-      {desc && <p className="mt-2 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-1 tracking-tight leading-tight">{desc}</p>}
-    </div>
-  );
-}
-
-function CustomTooltip({ active, payload, label }) {
-  if (active && payload && payload.length) {
-    return (
-      <div className="bg-white border border-slate-300 p-2 text-[9px] font-bold shadow-xl">
-        <div className="mb-1 text-slate-400 uppercase tracking-widest border-b pb-1">Period {label}</div>
-        {payload.map((entry, i) => (
-          <div key={i} className="flex justify-between space-x-4">
-            <span style={{ color: entry.color }}>{entry.name || entry.dataKey}:</span>
-            <span className="font-mono">{entry.value.toFixed(3)}</span>
-          </div>
-        ))}
-      </div>
-    );
+function bisectRoot(fun, a, b, tol = 1e-10, maxit = 200) {
+  let low = a;
+  let high = b;
+  let flow = fun(low);
+  let fhigh = fun(high);
+  if (Math.abs(flow) < tol) return low;
+  if (Math.abs(fhigh) < tol) return high;
+  if (Math.sign(flow) === Math.sign(fhigh)) return (low + high) / 2;
+  for (let it = 0; it < maxit; it += 1) {
+    const mid = 0.5 * (low + high);
+    const fmid = fun(mid);
+    if (Math.abs(fmid) < tol || 0.5 * (high - low) < tol) return mid;
+    if (Math.sign(fmid) === Math.sign(flow)) {
+      low = mid;
+      flow = fmid;
+    } else {
+      high = mid;
+      fhigh = fmid;
+    }
   }
-  return null;
+  return 0.5 * (low + high);
 }
 
-function LegendItem({ color, label }) {
-  return (
-    <div className="flex items-center space-x-2">
-      <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
-      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{label}</span>
-    </div>
-  );
+function getY(k, bt, rho, gamma, A, L) {
+  if (k <= 0) return 0;
+  const kEff = clampMin(k);
+  const taskAgg = clampMin((bt ** (1 - rho)) * (kEff ** rho) + ((1 - bt) ** (1 - rho)) * (L ** rho));
+  return A * (kEff ** gamma) * (taskAgg ** ((1 - gamma) / rho));
 }
 
-function AboutSection({ leaderCode, followerCode, calibrationMode }) {
-  return (
-    <div className="max-w-3xl mx-auto space-y-10 py-10 px-4 bg-white border border-slate-200 shadow-sm rounded-lg">
-      <div className="border-b pb-6">
-        <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Technical Overview</h2>
-        <p className="text-slate-500 font-medium">Modeling Task-Based Automation & Cross-Border Capital Shifts</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <section className="space-y-3">
-          <h3 className="text-xs font-black uppercase text-blue-600 flex items-center"><Layers className="w-4 h-4 mr-2" /> Production Function</h3>
-          <div className="text-sm text-slate-600 leading-relaxed">
-            The engine uses a task-based framework where output is produced by capital and labor across a continuum of tasks. Automation ($\beta$) shifts tasks from labor to capital.
-            <div className="my-2 p-2 bg-slate-50 rounded font-mono text-center font-mono text-[10px]">
-              {'Y = A * K^gamma * [(beta^(1-rho) * K^rho + (1-beta)^(1-rho) * L^rho)^(1/rho)]^(1-gamma)'}
-            </div>
-          </div>
-        </section>
-        <section className="space-y-3">
-          <h3 className="text-xs font-black uppercase text-indigo-600 flex items-center"><TrendingUp className="w-4 h-4 mr-2" /> Global Market Clearing</h3>
-          <p className="text-sm text-slate-600 leading-relaxed">Capital flows globally to equalize <strong>net</strong> returns. Investors face a friction ($\omega$) when moving capital across borders.</p>
-        </section>
-        <section className="space-y-3">
-          <h3 className="text-xs font-black uppercase text-red-600 flex items-center"><TrendingDown className="w-4 h-4 mr-2" /> Data-Driven Calibration</h3>
-          <p className="text-sm text-slate-600 leading-relaxed">
-            {calibrationMode === 'real' ? (
-              <span>Current settings use real-world populations and GDP per capita to anchor <strong>{leaderCode}</strong>, <strong>{followerCode}</strong>, and <strong>ROW</strong> in a global framework.</span>
-            ) : (
-              <span>Calibrates productivity (A) based on abstract output-per-capita targets to study pure transition dynamics.</span>
-            )}
-          </p>
-        </section>
-        <section className="space-y-3">
-          <h3 className="text-xs font-black uppercase text-emerald-600 flex items-center"><Clock className="w-4 h-4 mr-2" /> Rational Foresight</h3>
-          <p className="text-sm text-slate-600 leading-relaxed">Agents adjust savings rates based on projected future returns (t+l), ensuring investment today is rationalized by the future global landscape.</p>
-        </section>
-      </div>
-    </div>
-  );
+function getR(k, bt, rho, gamma, A, L, delta) {
+  const kEff = clampMin(k);
+  const taskAgg = clampMin((bt ** (1 - rho)) * (kEff ** rho) + ((1 - bt) ** (1 - rho)) * (L ** rho));
+  const share = ((bt ** (1 - rho)) * (kEff ** rho)) / taskAgg;
+  const yOverK = getY(kEff, bt, rho, gamma, A, L) / kEff;
+  return (gamma + (1 - gamma) * share) * yOverK - delta;
 }
 
-// --- MAIN APPLICATION ---
+function getMpl(k, bt, rho, gamma, A, L) {
+  const kEff = clampMin(k);
+  const X = clampMin((bt ** (1 - rho)) * (kEff ** rho) + ((1 - bt) ** (1 - rho)) * (L ** rho));
+  const y = A * (kEff ** gamma) * (X ** ((1 - gamma) / rho));
+  return (1 - gamma) * (y / X) * ((1 - bt) ** (1 - rho)) * (L ** (rho - 1));
+}
 
-const App = () => {
-  const [activeView, setActiveView] = useState('dashboard');
-  const [mode, setMode] = useState('3C'); 
-  const [calibrationMode, setCalibrationMode] = useState('abstract'); 
-  const [activeScenario, setActiveScenario] = useState('tidal');
-  const [activeParamCategory, setActiveParamCategory] = useState('temporal');
-  
-  const [leaderCode, setLeaderCode] = useState('USA');
-  const [followerCode, setFollowerCode] = useState('CHN');
+function extendPath(arr, l) {
+  const tail = Array(l + 2).fill(arr[arr.length - 1]);
+  return [...arr, ...tail];
+}
 
-  const [params, setParams] = useState({
-    sigma: 0.4, delta: 0.05, phi: 0.25, gamma: 0.33,
-    r_target: 0.04, l: 3, periods: 50,
-    target_y_ratio_A: 2.0, target_y_ratio_B: 1.5,
-    w1: 0.001, w2: 0.005, w3: 0.005,
-    g1: 0, g2: 0, g3: 0,
-    hype_realized_max: 0.05, hype_perc_peak: 0.40, hype_trough_depth: 0.05,
-    tidal_max: 0.50, tidal_lag_B: 10, tidal_midpoint: 15, tidal_steepness: 0.45,
-    logjam_max: 0.50, logjam_lag_B: 8, logjam_mid1: 8, logjam_plateau_dur: 8,
-    gulf_max: 0.90, gulf_leakage_B: 0.10, gulf_leakage_C: 0.02, gulf_mid1: 10
-  });
+function buildScenarioPaths2C(id, t, bStart, steepnessGen) {
+  const hypeRealizedMax = 0.1;
+  const hypePercPeak = 0.4;
+  const hypeTroughDepth = 0.05;
+  const tidalMax = 0.5;
+  const tidalLagB = 10;
+  const tidalMidpoint = 15;
+  const tidalSteepness = 0.45;
+  const logjamMax = 0.5;
+  const logjamPlateauDur = 8;
+  const logjamLagB = 8;
+  const logjamMid1 = 8;
+  const logjamMid2 = logjamMid1 + 8 + logjamPlateauDur;
+  const gulfMax = 0.9;
+  const gulfPlateauGap = 10;
+  const gulfLeakageB = 0.1;
+  const gulfMid1 = 10;
+  const gulfMid2 = gulfMid1 + gulfPlateauGap + 5;
 
-  useEffect(() => {
-    if (mode === '2C') {
-      setParams(prev => ({ ...prev, w1: 0.008, target_y_ratio_A: 1.5, hype_realized_max: 0.1, periods: 40 }));
+  const betaA1 = t.map((x) => bStart + (hypeRealizedMax - bStart) * sigmoid(steepnessGen * (x - 5)));
+  const sPeak = t.map((x) => sigmoid(2.5 * (x - 3)) * (1 / (1 + Math.exp(1.8 * (x - 7)))));
+  const sTrough = t.map((x) => sigmoid(1.2 * (x - 10)) * (1 / (1 + Math.exp(0.6 * (x - 20)))));
+  const betaPercA1 = betaA1.map((v, i) => Math.max(1e-6, v + hypePercPeak * sPeak[i] - hypeTroughDepth * sTrough[i]));
+  const betaB1 = [...betaA1];
+
+  const betaA2 = t.map((x) => bStart + tidalMax * sigmoid(tidalSteepness * (x - tidalMidpoint)));
+  const betaB2 = t.map((_, i) => (i < tidalLagB ? bStart : betaA2[i - tidalLagB]));
+
+  const betaA3 = t.map((x) => bStart + 0.2 * sigmoid(steepnessGen * (x - logjamMid1)) + (logjamMax - 0.2) * sigmoid(steepnessGen * (x - logjamMid2)));
+  const betaB3 = t.map((_, i) => (i < logjamLagB ? bStart : betaA3[i - logjamLagB]));
+
+  const betaA4 = t.map((x) => bStart + 0.4 * sigmoid(0.8 * (x - gulfMid1)) + (gulfMax - 0.4) * sigmoid(0.8 * (x - gulfMid2)));
+  const betaB4 = betaA4.map((v) => v * gulfLeakageB);
+
+  const map = {
+    hype: [betaA1, betaB1, betaPercA1, betaB1],
+    tidal: [betaA2, betaB2, betaA2, betaB2],
+    logjam: [betaA3, betaB3, betaA3, betaB3],
+    gulf: [betaA4, betaB4, betaA4, betaB4],
+  };
+  return map[id] || map.hype;
+}
+
+function buildScenarioPaths3C(id, t, bStart, steepnessGen) {
+  const hypeRealizedMax = 0.1;
+  const hypePercPeak = 0.4;
+  const hypeTroughDepth = 0.05;
+  const tidalMax = 0.5;
+  const tidalLagB = 10;
+  const tidalLagC = 20;
+  const tidalMidpoint = 15;
+  const tidalSteepness = 0.45;
+  const logjamMax = 0.5;
+  const logjamPlateauDur = 8;
+  const logjamLagB = 8;
+  const logjamMid1 = 8;
+  const logjamMid2 = logjamMid1 + 8 + logjamPlateauDur;
+  const gulfMax = 0.9;
+  const gulfPlateauGap = 10;
+  const gulfLeakageB = 0.1;
+  const gulfLeakageC = 0.02;
+  const gulfMid1 = 10;
+  const gulfMid2 = gulfMid1 + gulfPlateauGap + 5;
+
+  const betaA1 = t.map((x) => bStart + (hypeRealizedMax - bStart) * sigmoid(steepnessGen * (x - 5)));
+  const sPeak = t.map((x) => sigmoid(2.5 * (x - 3)) * (1 / (1 + Math.exp(1.8 * (x - 7)))));
+  const sTrough = t.map((x) => sigmoid(1.2 * (x - 10)) * (1 / (1 + Math.exp(0.6 * (x - 20)))));
+  const betaPercA1 = betaA1.map((v, i) => Math.max(1e-6, v + hypePercPeak * sPeak[i] - hypeTroughDepth * sTrough[i]));
+  const betaB1 = [...betaA1];
+  const betaC1 = t.map(() => bStart);
+
+  const betaA2 = t.map((x) => bStart + tidalMax * sigmoid(tidalSteepness * (x - tidalMidpoint)));
+  const betaB2 = t.map((_, i) => (i < tidalLagB ? bStart : betaA2[i - tidalLagB]));
+  const betaC2 = t.map((_, i) => (i < tidalLagC ? bStart : betaA2[i - tidalLagC]));
+
+  const betaA3 = t.map((x) => bStart + 0.2 * sigmoid(steepnessGen * (x - logjamMid1)) + (logjamMax - 0.2) * sigmoid(steepnessGen * (x - logjamMid2)));
+  const betaB3 = t.map((_, i) => (i < logjamLagB ? bStart : betaA3[i - logjamLagB]));
+  const betaC3 = t.map((_, i) => (i < 2 * logjamLagB ? bStart : betaA3[i - 2 * logjamLagB]));
+
+  const betaA4 = t.map((x) => bStart + 0.4 * sigmoid(0.8 * (x - gulfMid1)) + (gulfMax - 0.4) * sigmoid(0.8 * (x - gulfMid2)));
+  const betaB4 = betaA4.map((v) => v * gulfLeakageB);
+  const betaC4 = betaA4.map((v) => v * gulfLeakageC);
+
+  const map = {
+    hype: [betaA1, betaB1, betaC1, betaPercA1, betaB1, betaC1],
+    tidal: [betaA2, betaB2, betaC2, betaA2, betaB2, betaC2],
+    logjam: [betaA3, betaB3, betaC3, betaA3, betaB3, betaC3],
+    gulf: [betaA4, betaB4, betaC4, betaA4, betaB4, betaC4],
+  };
+  return map[id] || map.hype;
+}
+
+function solve2CMarketExact(V, bt, delta, A, L, gamma, rho, w, tau) {
+  const tol = 1e-10;
+  const VA = Math.max(V[0], 0);
+  const VB = Math.max(V[1], 0);
+  if (VA + VB <= tol) {
+    return { K: [0, 0], P: [[0, 0], [0, 0]], autarky: true, regime: 0 };
+  }
+  const rAaut = getR(VA, bt[0], rho, gamma, A[0], L[0], delta);
+  const rBaut = getR(VB, bt[1], rho, gamma, A[1], L[1], delta);
+  const gapA = rAaut - (rBaut - w[1] - tau[0]);
+  const gapB = rBaut - (rAaut - w[0] - tau[1]);
+
+  if (gapA >= -tol && gapB >= -tol) {
+    return { K: [VA, VB], P: [[VA, 0], [0, VB]], autarky: true, regime: 0 };
+  }
+
+  if (gapA < -tol && gapB >= -tol) {
+    const f = (x) => getR(VA - x, bt[0], rho, gamma, A[0], L[0], delta) - (getR(VB + x, bt[1], rho, gamma, A[1], L[1], delta) - w[1] - tau[0]);
+    const x = VA <= tol ? 0 : (f(VA) < 0 ? VA : bisectRoot(f, 0, VA));
+    return { K: [VA - x, VB + x], P: [[VA - x, x], [0, VB]], autarky: false, regime: 1 };
+  }
+
+  const f = (x) => getR(VB - x, bt[1], rho, gamma, A[1], L[1], delta) - (getR(VA + x, bt[0], rho, gamma, A[0], L[0], delta) - w[0] - tau[1]);
+  const x = VB <= tol ? 0 : (f(VB) < 0 ? VB : bisectRoot(f, 0, VB));
+  return { K: [VA + x, VB - x], P: [[VA, 0], [x, VB - x]], autarky: false, regime: -1 };
+}
+
+function repairPortfolio(Pin, V) {
+  const n = V.length;
+  if (!Pin || Pin.length !== n) {
+    return V.map((v, i) => Array.from({ length: n }, (_, j) => (i === j ? v : 0)));
+  }
+  const P = Pin.map((row) => row.map((x) => Math.max(0, Number.isFinite(x) ? x : 0)));
+  for (let i = 0; i < n; i += 1) {
+    const rowSum = P[i].reduce((a, b) => a + b, 0);
+    if (rowSum <= 1e-14) {
+      for (let j = 0; j < n; j += 1) P[i][j] = i === j ? V[i] : 0;
     } else {
-      setParams(prev => ({ ...prev, w1: 0.001, target_y_ratio_A: 2.0, hype_realized_max: 0.05, periods: 60 }));
+      for (let j = 0; j < n; j += 1) P[i][j] *= V[i] / rowSum;
     }
-  }, [mode]);
+  }
+  return P;
+}
 
-  const simulationResults = useMemo(() => {
-    const { 
-      sigma, delta, phi, gamma, r_target, l, w1, w2, w3, g1, g2, g3, periods: T_sim,
-      target_y_ratio_A: abstract_yA, target_y_ratio_B: abstract_yB,
-      hype_realized_max, hype_perc_peak, hype_trough_depth,
-      tidal_max, tidal_lag_B, tidal_midpoint, tidal_steepness,
-      logjam_max, logjam_lag_B, logjam_mid1, logjam_plateau_dur,
-      gulf_max, gulf_leakage_B, gulf_leakage_C, gulf_mid1
-    } = params;
+function netReturn(owner, loc, Kloc, bt, delta, A, L, gamma, rho, w, tau) {
+  let val = getR(Kloc, bt[loc], rho, gamma, A[loc], L[loc], delta);
+  if (owner !== loc) val -= w[loc] + tau[owner];
+  return val;
+}
 
-    const rho = (sigma - 1) / sigma;
-    const T_full = 120;
-    const n = mode === '2C' ? 2 : 3;
-    const b_start = 0.001;
+function solve3CMarketNumeric(V, bt, delta, A, L, gamma, rho, w, tau, Pinit) {
+  const n = V.length;
+  const tolMove = 1e-10;
+  const tolSupport = 1e-8;
+  const maxOuter = 500;
+  const Vpos = V.map((x) => Math.max(0, x));
+  if (Vpos.reduce((a, b) => a + b, 0) <= tolMove) {
+    return { K: Array(n).fill(0), P: Array.from({ length: n }, () => Array(n).fill(0)), pureAutarky: true };
+  }
+  const P = repairPortfolio(Pinit, Vpos);
+  let K = Array.from({ length: n }, (_, j) => P.reduce((sum, row) => sum + row[j], 0));
 
-    let L_vec, final_y_ratio_A, final_y_ratio_B;
-
-    if (calibrationMode === 'real') {
-      const leader = COUNTRY_DATA[leaderCode];
-      const follower = COUNTRY_DATA[followerCode];
-      const row = COUNTRY_DATA['ROW'];
-      const base_scale = row.pop;
-      L_vec = n === 2 
-        ? [leader.pop / base_scale, follower.pop / base_scale]
-        : [leader.pop / base_scale, follower.pop / base_scale, row.pop / base_scale];
-      final_y_ratio_A = leader.gdp_pc / row.gdp_pc;
-      final_y_ratio_B = follower.gdp_pc / row.gdp_pc;
-    } else {
-      L_vec = n === 2 ? [5.0, 2.5] : [5.0, 3.0, 1.0];
-      final_y_ratio_A = abstract_yA;
-      final_y_ratio_B = abstract_yB;
-    }
-
-    const w_vec = n === 2 ? [w1, w2] : [w1, w2, w3];
-    const A0_numeraire = 1.0;
-    const k_ss_num = solve_ki_for_r(r_target, b_start, delta, A0_numeraire, 1.0, gamma, rho);
-    const y_ss_num = get_y(k_ss_num, b_start, rho, gamma, A0_numeraire, 1.0);
-    
-    const findA0 = (target_ratio) => {
-      const target_y = y_ss_num * target_ratio;
-      return fzero((a_guess) => {
-        const k_local = solve_ki_for_r(r_target, b_start, delta, a_guess, 1.0, gamma, rho);
-        return get_y(k_local, b_start, rho, gamma, a_guess, 1.0) - target_y;
-      }, 0.01, 50.0);
-    };
-
-    const A0_A = findA0(final_y_ratio_A);
-    const A0_B = findA0(final_y_ratio_B);
-    const A0_vec = n === 2 ? [A0_A, A0_numeraire] : [A0_A, A0_B, A0_numeraire];
-    const A_paths = A0_vec.map((a0, i) => Array.from({ length: T_full + 1 }, (_, t) => a0 * Math.pow(1 + [g1, g2, g3][i], t)));
-    const K_init_pc = A0_vec.map(a => solve_ki_for_r(r_target, b_start, delta, a, 1.0, gamma, rho));
-    const Y_init_pc = K_init_pc.map((ki, i) => get_y(ki, b_start, rho, gamma, A0_vec[i], 1.0));
-    const s_base_vec = K_init_pc.map((ki, i) => (delta * ki) / Y_init_pc[i]);
-
-    const t_axis = Array.from({ length: T_full + 1 }, (_, i) => i);
-    const beta_paths = Array.from({ length: n }, () => Array(T_full + 1).fill(b_start));
-    let beta_perc_L = Array(T_full + 1).fill(b_start);
-
-    if (activeScenario === 'hype') {
-      const bL = t_axis.map(t => b_start + (hype_realized_max - b_start) / (1 + Math.exp(-0.8 * (t - 5))));
-      const sp = t_axis.map(t => (1 / (1 + Math.exp(-2.5 * (t - 3)))) * (1 / (1 + Math.exp(1.8 * (t - 7)))));
-      const st = t_axis.map(t => (1 / (1 + Math.exp(-1.2 * (t - 10)))) * (1 / (1 + Math.exp(0.6 * (t - 20)))));
-      beta_paths[0] = bL; beta_paths[1] = [...bL]; 
-      if (n === 3) beta_paths[2] = Array(T_full+1).fill(b_start);
-      beta_perc_L = bL.map((v, i) => Math.max(1e-6, v + (hype_perc_peak * sp[i]) - (hype_trough_depth * st[i])));
-    } else if (activeScenario === 'tidal') {
-      const bL = t_axis.map(t => b_start + tidal_max / (1 + Math.exp(-tidal_steepness * (t - tidal_midpoint))));
-      beta_paths[0] = bL;
-      beta_paths[1] = t_axis.map((_, t) => t < tidal_lag_B ? b_start : bL[t - Math.round(tidal_lag_B)]);
-      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * tidal_lag_B ? b_start : bL[t - Math.round(2 * tidal_lag_B)]);
-      beta_perc_L = [...bL];
-    } else if (activeScenario === 'logjam') {
-      const m2 = logjam_mid1 + 8 + logjam_plateau_dur;
-      const bL = t_axis.map(t => b_start + (0.2 / (1 + Math.exp(-0.8 * (t - logjam_mid1)))) + (logjam_max - 0.2) / (1 + Math.exp(-0.8 * (t - m2))));
-      beta_paths[0] = bL;
-      beta_paths[1] = t_axis.map((_, t) => t < logjam_lag_B ? b_start : bL[t - Math.round(logjam_lag_B)]);
-      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * logjam_lag_B ? b_start : bL[t - Math.round(2 * logjam_lag_B)]);
-      beta_perc_L = [...bL];
-    } else {
-      const m2 = gulf_mid1 + 15;
-      const bL = t_axis.map(t => b_start + (0.4 / (1 + Math.exp(-0.8 * (t - gulf_mid1)))) + (gulf_max - 0.4) / (1 + Math.exp(-0.8 * (t - m2))));
-      beta_paths[0] = bL;
-      beta_paths[1] = bL.map(v => b_start + (v - b_start) * gulf_leakage_B);
-      if (n === 3) beta_paths[2] = bL.map(v => b_start + (v - b_start) * gulf_leakage_C);
-      beta_perc_L = [...bL];
-    }
-
-    let P = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? K_init_pc[i] * L_vec[i] : 0)));
-    const pipelines = Array.from({ length: n }, (_, i) => Array(T_full + l + 10).fill(delta * K_init_pc[i] * L_vec[i]));
-    const history = [];
-    let s_guess = [...s_base_vec];
-    const b_paths_ext = beta_paths.map(p => [...p, ...Array(l + 10).fill(p[T_full])]);
-    const b_perc_ext = [...beta_perc_L, ...Array(l + 10).fill(beta_perc_L[T_full])];
-    
-    let Y_prev = Array(n).fill(0).map((_, i) => get_y(K_init_pc[i] * L_vec[i], b_start, rho, gamma, A0_vec[i], L_vec[i]));
-    let GNI_init = [];
-
-    for (let t = 0; t < T_sim; t++) {
-      const K_curr = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
-      const V_curr = P.map(row => row.reduce((a, b) => a + b, 0));
-      const bt_r = beta_paths.map(p => p[t]);
-      const A_curr = A_paths.map(p => p[t]);
-
-      const Y = Array(n).fill(0).map((_, i) => get_y(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i]));
-      const r_real = Array(n).fill(0).map((_, i) => get_r(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i], delta));
-      const labor_inc = Y.map((y, i) => y - (r_real[i] + delta) * K_curr[i]);
-      const GNI_parts = Array.from({length: n}, (_, k) => {
-        const dom = P[k][k] * r_real[k];
-        let for_inc = 0;
-        for (let m = 0; m < n; m++) if (m !== k) for_inc += P[k][m] * (r_real[m] - w_vec[m]);
-        return { labor: labor_inc[k] / L_vec[k], dom_cap: dom / L_vec[k], for_cap: for_inc / L_vec[k] };
-      });
-      const GNI = GNI_parts.map((p, i) => (p.labor + p.dom_cap + p.for_cap) * L_vec[i]);
-      if (t === 0) GNI_init = [...GNI];
-
-      const dY = Y.map((y, i) => t === 0 ? 0 : ((y / Y_prev[i]) - 1) * 100);
-      Y_prev = [...Y];
-
-      const max_beta = Math.max(...bt_r);
-      const bt_frontier = Array(n).fill(max_beta);
-      const Kf_shadow = solve_n_country_market(V_curr, bt_frontier, delta, A0_vec, L_vec, gamma, rho, w_vec);
-      const starvation = Kf_shadow.map((kf, i) => (kf - K_curr[i]) / (kf + 1e-12));
-
-      // Foresight
-      const idx_f = Math.min(T_full, t + l);
-      const bt_f = b_paths_ext.map((p, i) => i === 0 ? b_perc_ext[idx_f] : p[idx_f]);
-      const A_f = A_paths.map(p => p[idx_f]);
-      const V_fixed = V_curr.map((v, i) => {
-        let surv = v * Math.pow(1 - delta, l);
-        for (let m = 1; m < l; m++) surv += pipelines[i][t + m] * Math.pow(1 - delta, l - m);
-        return surv;
-      });
-
-      for (let iter = 0; iter < 30; iter++) {
-        const V_proj = V_fixed.map((v, i) => v + s_guess[i] * GNI[i]);
-        const K_f = solve_n_country_market(V_proj, bt_f, delta, A0_vec, L_vec, gamma, rho, w_vec);
-        const rr_f = K_f.map((k, i) => get_r(k, bt_f[i], rho, gamma, A_f[i], L_vec[i], delta));
-        const V_world = V_proj.reduce((a, b) => a + b, 0);
-        const r_yield = V_proj.map((_, owner) => {
-          let yVal = 0;
-          for (let loc = 0; loc < n; loc++) yVal += (K_f[loc] / (V_world + 1e-12)) * (rr_f[loc] - (owner !== loc ? w_vec[loc] : 0));
-          return yVal;
-        });
-        const s_target = s_base_vec.map((sb, i) => Math.max(0, sb + phi * (r_yield[i] - r_target)));
-        if (s_target.every((v, i) => Math.abs(v - s_guess[i]) < 1e-6)) break;
-        s_guess = s_target.map((v, i) => v * 0.4 + s_guess[i] * 0.6);
-      }
-      pipelines.forEach((p, i) => { p[t + l] = s_guess[i] * GNI[i]; });
-
-      P = P.map(row => row.map(v => v * (1 - delta)));
-      for (let i = 0; i < n; i++) P[i][i] += pipelines[i][t + 1];
-      const V_new = P.map(row => row.reduce((a, b) => a + b, 0));
-      const bt_next = b_paths_ext.map((p, i) => i === 0 ? b_perc_ext[t + 1] : p[t + 1]);
-      const A_next = A_paths.map(p => p[Math.min(T_full, t + 1)]);
-      const K_target = solve_n_country_market(V_new, bt_next, delta, A_next, L_vec, gamma, rho, w_vec);
-      const V_tot_new = V_new.reduce((a, b) => a + b, 0);
-      for (let r = 0; r < n; r++) {
-        for (let c = 0; c < n; c++) {
-          if (V_tot_new > 1e-9) P[r][c] = V_new[r] * (K_target[c] / V_tot_new);
-        }
-      }
-
-      const endPeriodRev = Array(n).fill(0).map((_, loc) => {
-        let tax_base = 0;
-        for (let owner = 0; owner < n; owner++) if (owner !== loc) tax_base += P[owner][loc];
-        return tax_base * w_vec[loc];
-      });
-
-      const netRentierIncome = Array(n).fill(0).map((_, k) => {
-        let fromAbroad = 0, paidToForeigners = 0;
-        for (let m = 0; m < n; m++) {
-          if (m !== k) {
-            fromAbroad += P[k][m] * (r_real[m] - w_vec[m]);
-            paidToForeigners += P[m][k] * (r_real[k] - w_vec[k]);
+  for (let outer = 0; outer < maxOuter; outer += 1) {
+    let bestGap = tolMove;
+    let best = null;
+    for (let i = 0; i < n; i += 1) {
+      for (let a = 0; a < n; a += 1) {
+        if (P[i][a] <= tolMove) continue;
+        const netA = netReturn(i, a, K[a], bt, delta, A, L, gamma, rho, w, tau);
+        for (let b = 0; b < n; b += 1) {
+          if (b === a) continue;
+          const netB = netReturn(i, b, K[b], bt, delta, A, L, gamma, rho, w, tau);
+          const gap = netB - netA;
+          if (gap > bestGap) {
+            bestGap = gap;
+            best = { i, a, b };
           }
         }
-        return fromAbroad - paidToForeigners;
-      });
-
-      const v_pc = V_curr.map((v, i) => v / L_vec[i]);
-      const wealth_sh = v_pc.map(v => (v / (v_pc.reduce((a,b)=>a+b,0) + 1e-12)) * 100);
-
-      history.push({
-        t, dY1: dY[0], dY2: dY[1], dY3: n === 3 ? dY[2] : 0,
-        beta1: bt_r[0], beta2: bt_r[1], beta3: bt_r[2] || 0, betaP: activeScenario === 'hype' ? b_perc_ext[t] : null,
-        r1: r_real[0] * 100, r2: r_real[1] * 100, r3: (r_real[2] || 0) * 100,
-        s1: s_guess[0], s2: s_guess[1], s3: s_guess[2] || 0,
-        sh1: wealth_sh[0], sh2: wealth_sh[1], sh3: wealth_sh[2] || 0,
-        ls1: (labor_inc[0] / GNI[0]) * 100, ls2: (labor_inc[1] / GNI[1]) * 100, ls3: (labor_inc[2] ? labor_inc[2] / GNI[2] : 0) * 100,
-        sg2: starvation[1] * 100, sg3: starvation[2] ? starvation[2] * 100 : 0,
-        rawRev: endPeriodRev,
-        rawK: [...K_curr],
-        GNI1: GNI[0] / GNI_init[0] * 100, GNI2: GNI[1] / GNI_init[1] * 100, GNI3: (GNI[2] || 1) / (GNI_init[2] || 1) * 100,
-        rent1: (netRentierIncome[0] / GNI[0]) * 100, rent2: (netRentierIncome[1] / GNI[1]) * 100, rent3: n === 3 ? (netRentierIncome[2] / GNI[2]) * 100 : 0,
-        gni_parts: GNI_parts
-      });
+      }
     }
+    if (!best) break;
+    const maxMove = P[best.i][best.a];
+    const f = (x) => netReturn(best.i, best.b, K[best.b] + x, bt, delta, A, L, gamma, rho, w, tau) - netReturn(best.i, best.a, K[best.a] - x, bt, delta, A, L, gamma, rho, w, tau);
+    const xStar = maxMove <= tolMove ? 0 : (f(maxMove) >= 0 ? maxMove : bisectRoot(f, 0, maxMove, 1e-12, 200));
+    if (xStar <= tolMove) break;
+    P[best.i][best.a] -= xStar;
+    P[best.i][best.b] += xStar;
+    K[best.a] -= xStar;
+    K[best.b] += xStar;
+  }
 
-    const h1 = history.find(h => h.t === 1) || history[0];
-    const baseRev = [Math.max(1e-12, h1.rawRev[0]), Math.max(1e-12, h1.rawRev[1]), Math.max(1e-12, h1.rawRev[2])];
-    const baseK = [Math.max(1e-12, h1.rawK[0]), Math.max(1e-12, h1.rawK[1]), Math.max(1e-12, h1.rawK[2])];
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      if (Math.abs(P[i][j]) < 1e-12) P[i][j] = 0;
+    }
+  }
+  K = Array.from({ length: n }, (_, j) => P.reduce((sum, row) => sum + row[j], 0));
+  let pureAutarky = true;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      if (i !== j && P[i][j] > tolSupport) pureAutarky = false;
+    }
+  }
+  return { K, P, pureAutarky };
+}
 
-    return history.map(h => ({
-      ...h,
-      rev1: (h.rawRev[0] / baseRev[0]) * 100,
-      rev2: (h.rawRev[1] / baseRev[1]) * 100,
-      rev3: n === 3 ? (h.rawRev[2] / baseRev[2]) * 100 : 0,
-      k1: (h.rawK[0] / baseK[0]) * 100,
-      k2: (h.rawK[1] / baseK[1]) * 100,
-      k3: n === 3 ? (h.rawK[2] / baseK[2]) * 100 : 0
-    }));
-  }, [mode, activeScenario, params, calibrationMode, leaderCode, followerCode]);
+function calibrate2C(params) {
+  const rho = (params.sigma - 1) / params.sigma;
+  const fRB = (k) => getR(k, params.bStart, rho, params.gamma, params.A0_B, 1, params.delta) - params.rTarget;
+  const kB = fzero(fRB, 0.01, 1000);
+  const yB = getY(kB, params.bStart, rho, params.gamma, params.A0_B, 1);
+  const yTargetA = yB * params.targetYRatio;
+  const findA0A = (aGuess) => {
+    const k = fzero((kk) => getR(kk, params.bStart, rho, params.gamma, aGuess, 1, params.delta) - params.rTarget, 0.01, 2000);
+    return getY(k, params.bStart, rho, params.gamma, aGuess, 1) - yTargetA;
+  };
+  const A0A = fzero(findA0A, 0.1, 10);
+  const kA = fzero((k) => getR(k, params.bStart, rho, params.gamma, A0A, 1, params.delta) - params.rTarget, 0.01, 2000);
+  const sBaseA = (params.delta * kA) / getY(kA, params.bStart, rho, params.gamma, A0A, 1);
+  const sBaseB = (params.delta * kB) / getY(kB, params.bStart, rho, params.gamma, params.A0_B, 1);
+  return { rho, A0: [A0A, params.A0_B], kSS: [kA, kB], sBase: [sBaseA, sBaseB] };
+}
 
+function calibrate3C(params) {
+  const rho = (params.sigma - 1) / params.sigma;
+  const kC = fzero((k) => getR(k, params.bStart, rho, params.gamma, params.A0_C, 1, params.delta) - params.rTarget, 0.01, 1000);
+  const yC = getY(kC, params.bStart, rho, params.gamma, params.A0_C, 1);
+  const yTargetB = yC * params.targetY_B_to_C;
+  const yTargetA = yC * params.targetY_A_to_C;
+  const A0B = fzero((aGuess) => {
+    const k = fzero((kk) => getR(kk, params.bStart, rho, params.gamma, aGuess, 1, params.delta) - params.rTarget, 0.01, 2000);
+    return getY(k, params.bStart, rho, params.gamma, aGuess, 1) - yTargetB;
+  }, 0.1, 10);
+  const A0A = fzero((aGuess) => {
+    const k = fzero((kk) => getR(kk, params.bStart, rho, params.gamma, aGuess, 1, params.delta) - params.rTarget, 0.01, 2000);
+    return getY(k, params.bStart, rho, params.gamma, aGuess, 1) - yTargetA;
+  }, 0.1, 10);
+  const kB = fzero((k) => getR(k, params.bStart, rho, params.gamma, A0B, 1, params.delta) - params.rTarget, 0.01, 2000);
+  const kA = fzero((k) => getR(k, params.bStart, rho, params.gamma, A0A, 1, params.delta) - params.rTarget, 0.01, 2000);
+  const sBase = [
+    (params.delta * kA) / getY(kA, params.bStart, rho, params.gamma, A0A, 1),
+    (params.delta * kB) / getY(kB, params.bStart, rho, params.gamma, A0B, 1),
+    (params.delta * kC) / getY(kC, params.bStart, rho, params.gamma, params.A0_C, 1),
+  ];
+  return { rho, A0: [A0A, A0B, params.A0_C], kSS: [kA, kB, kC], sBase };
+}
+
+function simulate2C(scenarioId, params) {
+  const { rho, A0, kSS, sBase } = calibrate2C(params);
+  const t = Array.from({ length: params.T + 1 }, (_, i) => i);
+  const [betaA, betaB, betaPA, betaPB] = buildScenarioPaths2C(scenarioId, t, params.bStart, params.steepnessGen);
+  const bA_r = extendPath(betaA, params.l);
+  const bB_r = extendPath(betaB, params.l);
+  const bP_A = extendPath(betaPA, params.l);
+  const bP_B = extendPath(betaPB, params.l);
+  let P = [
+    [kSS[0] * params.L[0], 0],
+    [0, kSS[1] * params.L[1]],
+  ];
+  const pipeA = Array(params.tLength || params.T + 1 + params.l + 5).fill(params.delta * P[0][0]);
+  const pipeB = Array(params.tLength || params.T + 1 + params.l + 5).fill(params.delta * P[1][1]);
+  const chart = [];
+
+  for (let i = 0; i <= params.T_SIM; i += 1) {
+    const K = [P[0][0] + P[1][0], P[0][1] + P[1][1]];
+    const V = [P[0][0] + P[0][1], P[1][0] + P[1][1]];
+    const bt = [bA_r[i], bB_r[i]];
+    const perceived = [bP_A[Math.min(i + params.l, bP_A.length - 1)], bP_B[Math.min(i + params.l, bP_B.length - 1)]];
+    const Y = K.map((k, c) => getY(k, bt[c], rho, params.gamma, A0[c], params.L[c]));
+    const rReal = K.map((k, c) => getR(k, bt[c], rho, params.gamma, A0[c], params.L[c], params.delta));
+    const mpl = K.map((k, c) => getMpl(k, bt[c], rho, params.gamma, A0[c], params.L[c]));
+
+    const offshore = [V[0] > 0 ? P[0][1] / V[0] : 0, V[1] > 0 ? P[1][0] / V[1] : 0];
+    const niip = [P[0][1] - P[1][0], P[1][0] - P[0][1]];
+    const foreignIncome = [P[0][1] * Math.max(0, rReal[1] - params.omega[1] - params.tau[0]), P[1][0] * Math.max(0, rReal[0] - params.omega[0] - params.tau[1])];
+    const gni = [mpl[0] * params.L[0] + P[0][0] * rReal[0] + foreignIncome[0], mpl[1] * params.L[1] + P[1][1] * rReal[1] + foreignIncome[1]];
+
+    chart.push({
+      period: i,
+      autarky: +(P[0][1] < 1e-8 && P[1][0] < 1e-8),
+      beta_A: bt[0], beta_B: bt[1], beta_A_perc: bP_A[i],
+      output_A: Y[0] / Y[0] * 100, output_B: Y[1] / chart[0]?.__YB0 || 100,
+      output_A_raw: Y[0], output_B_raw: Y[1],
+      r_A: rReal[0], r_B: rReal[1],
+      mpl_A: mpl[0], mpl_B: mpl[1],
+      niip_A: niip[0], niip_B: niip[1],
+      offshore_A: offshore[0] * 100, offshore_B: offshore[1] * 100,
+      gni_A: gni[0], gni_B: gni[1],
+      __YB0: chart[0]?.__YB0 || Y[1],
+      regime: P[0][1] > 1e-8 ? 1 : (P[1][0] > 1e-8 ? -1 : 0),
+    });
+
+    const futureReturns = [
+      getR(K[0], perceived[0], rho, params.gamma, A0[0], params.L[0], params.delta),
+      getR(K[1], perceived[1], rho, params.gamma, A0[1], params.L[1], params.delta),
+    ];
+    const sRate = sBase.map((s, c) => Math.max(0.02, Math.min(0.5, s * (1 + 0.25 * (futureReturns[c] - params.rTarget) / params.rTarget))));
+    pipeA[i + params.l] = sRate[0] * Y[0];
+    pipeB[i + params.l] = sRate[1] * Y[1];
+
+    const investmentNext = [pipeA[i], pipeB[i]];
+    const Vnext = [Math.max(0, (1 - params.delta) * V[0] + investmentNext[0]), Math.max(0, (1 - params.delta) * V[1] + investmentNext[1])];
+    const solved = solve2CMarketExact(Vnext, bt, params.delta, A0, params.L, params.gamma, rho, params.omega, params.tau);
+    P = solved.P;
+  }
+
+  const yA0 = chart[0]?.output_A_raw || 1;
+  const yB0 = chart[0]?.output_B_raw || 1;
+  chart.forEach((d) => {
+    d.output_A = (d.output_A_raw / yA0) * 100;
+    d.output_B = (d.output_B_raw / yB0) * 100;
+    delete d.__YB0;
+  });
+  return { chart, meta: { A0, kSS, sBase } };
+}
+
+function simulate3C(scenarioId, params) {
+  const { rho, A0, kSS, sBase } = calibrate3C(params);
+  const t = Array.from({ length: params.T + 1 }, (_, i) => i);
+  const [betaA, betaB, betaC, betaPA, betaPB, betaPC] = buildScenarioPaths3C(scenarioId, t, params.bStart, params.steepnessGen);
+  const bR = [extendPath(betaA, params.l), extendPath(betaB, params.l), extendPath(betaC, params.l)];
+  const bP = [extendPath(betaPA, params.l), extendPath(betaPB, params.l), extendPath(betaPC, params.l)];
+  let P = [
+    [kSS[0] * params.L[0], 0, 0],
+    [0, kSS[1] * params.L[1], 0],
+    [0, 0, kSS[2] * params.L[2]],
+  ];
+  const pipe = Array.from({ length: 3 }, (_, c) => Array(params.T + params.l + 10).fill(params.delta * P[c][c]));
+  const chart = [];
+
+  for (let i = 0; i <= params.T_SIM; i += 1) {
+    const K = Array.from({ length: 3 }, (_, j) => P.reduce((sum, row) => sum + row[j], 0));
+    const V = P.map((row) => row.reduce((a, b) => a + b, 0));
+    const bt = bR.map((row) => row[i]);
+    const futureBt = bP.map((row) => row[Math.min(i + params.l, row.length - 1)]);
+    const Y = K.map((k, c) => getY(k, bt[c], rho, params.gamma, A0[c], params.L[c]));
+    const rReal = K.map((k, c) => getR(k, bt[c], rho, params.gamma, A0[c], params.L[c], params.delta));
+    const mpl = K.map((k, c) => getMpl(k, bt[c], rho, params.gamma, A0[c], params.L[c]));
+    const offshore = V.map((v, owner) => (v > 0 ? (v - P[owner][owner]) / v : 0));
+    const niip = [
+      (P[0][1] + P[0][2]) - (P[1][0] + P[2][0]),
+      (P[1][0] + P[1][2]) - (P[0][1] + P[2][1]),
+      (P[2][0] + P[2][1]) - (P[0][2] + P[1][2]),
+    ];
+    const foreignIncome = [0, 1, 2].map((owner) => {
+      let sum = 0;
+      for (let loc = 0; loc < 3; loc += 1) {
+        if (owner !== loc) sum += P[owner][loc] * Math.max(0, rReal[loc] - params.omega[loc] - params.tau[owner]);
+      }
+      return sum;
+    });
+    const gni = [0, 1, 2].map((c) => mpl[c] * params.L[c] + P[c][c] * rReal[c] + foreignIncome[c]);
+    const pureAutarky = [0, 1, 2].every((a) => [0, 1, 2].every((b) => a === b || P[a][b] < 1e-8));
+
+    chart.push({
+      period: i,
+      autarky: +pureAutarky,
+      beta_A: bt[0], beta_B: bt[1], beta_C: bt[2], beta_A_perc: bP[0][i],
+      output_A_raw: Y[0], output_B_raw: Y[1], output_C_raw: Y[2],
+      r_A: rReal[0], r_B: rReal[1], r_C: rReal[2],
+      niip_A: niip[0], niip_B: niip[1], niip_C: niip[2],
+      offshore_A: offshore[0] * 100, offshore_B: offshore[1] * 100, offshore_C: offshore[2] * 100,
+      gni_A: gni[0], gni_B: gni[1], gni_C: gni[2],
+    });
+
+    const futureReturns = [0, 1, 2].map((c) => getR(K[c], futureBt[c], rho, params.gamma, A0[c], params.L[c], params.delta));
+    const sRate = sBase.map((s, c) => Math.max(0.02, Math.min(0.5, s * (1 + 0.25 * (futureReturns[c] - params.rTarget) / params.rTarget))));
+    for (let c = 0; c < 3; c += 1) pipe[c][i + params.l] = sRate[c] * Y[c];
+
+    const Vnext = V.map((v, c) => Math.max(0, (1 - params.delta) * v + pipe[c][i]));
+    const solved = solve3CMarketNumeric(Vnext, bt, params.delta, A0, params.L, params.gamma, rho, params.omega, params.tau, P);
+    P = solved.P;
+  }
+
+  const base = [chart[0]?.output_A_raw || 1, chart[0]?.output_B_raw || 1, chart[0]?.output_C_raw || 1];
+  chart.forEach((d) => {
+    d.output_A = (d.output_A_raw / base[0]) * 100;
+    d.output_B = (d.output_B_raw / base[1]) * 100;
+    d.output_C = (d.output_C_raw / base[2]) * 100;
+  });
+  return { chart, meta: { A0, kSS, sBase } };
+}
+
+function ControlCard({ title, icon, children }) {
   return (
-    <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900">
-      <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20">
-        <div className="p-4 border-b border-slate-200 flex items-center space-x-3 bg-slate-900 text-white font-black uppercase tracking-widest text-[11px]">
-          <Globe className="w-5 h-5 text-blue-400" /><span>Simulation Engine</span>
-        </div>
-        <div className="flex-1 overflow-y-auto p-5 space-y-6 scrollbar-hide">
-          <div className="space-y-3 pb-4 border-b border-slate-100">
-             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">System Mode</label>
-             <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
-                <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Abstract</button>
-                <button onClick={() => setCalibrationMode('real')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'real' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}>Real-World</button>
-             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
-            {['2C', '3C'].map(m => (
-              <button key={m} onClick={() => setMode(m)} className={`py-1.5 text-[10px] font-black uppercase rounded-md transition-all ${mode === m ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>{m === '2C' ? '2-Country' : '3-Country'}</button>
-            ))}
-          </div>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {['dashboard', 'about'].map(v => (
-              <button key={v} onClick={() => setActiveView(v)} className={`flex-1 py-2 text-[10px] font-black uppercase rounded-md transition-all ${activeView === v ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}>{v}</button>
-            ))}
-          </div>
-          {calibrationMode === 'real' && (
-            <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">1. Select Leader</label>
-                <select value={leaderCode} onChange={e => setLeaderCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
-                  <option value="USA">United States (80k GDP pc)</option>
-                  <option value="CHN">China (12.5k GDP pc)</option>
-                </select>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">2. Select Follower</label>
-                <select value={followerCode} onChange={e => setFollowerCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
-                  {Object.keys(COUNTRY_DATA).filter(k => k !== leaderCode && k !== 'ROW').map(code => (
-                    <option key={code} value={code}>{COUNTRY_DATA[code].name} ({COUNTRY_DATA[code].gdp_pc / 1000}k GDP pc)</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1 opacity-50">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">3. ROW (Default)</label>
-                <div className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg bg-slate-50">Rest of World (Laggard)</div>
-              </div>
-            </div>
-          )}
-          <div className="space-y-1">
-            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2">Active Scenario</label>
-            <div className="grid grid-cols-1 gap-2">
-              {SCENARIOS.map(s => (
-                <button key={s.id} onClick={() => setActiveScenario(s.id)} className={`w-full p-2.5 text-left rounded-lg border text-[10px] font-bold transition-all ${activeScenario === s.id ? 'bg-blue-50 border-blue-400 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'}`}>{s.name.toUpperCase()}</button>
-              ))}
-            </div>
-          </div>
-          <div className="space-y-3 pt-4 border-t border-slate-100">
-            <div className="relative">
-              <select value={activeParamCategory} onChange={(e) => setActiveParamCategory(e.target.value)} className="w-full p-2 text-xs font-black uppercase border border-slate-200 rounded-lg appearance-none bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10 shadow-sm cursor-pointer">
-                <option value="temporal">Temporal Setup</option>
-                <option value="size">Size & Calibration</option>
-                <option value="frictions">Capital Controls</option>
-                <option value="growth">Growth Rates</option>
-              </select>
-              <ChevronDown className="absolute right-3 top-2.5 w-3 h-3 text-slate-400 pointer-events-none" />
-            </div>
-            <div className="bg-slate-50 p-4 rounded-xl space-y-5 border border-slate-200 shadow-sm">
-              {activeParamCategory === 'temporal' && (
-                <>
-                  <ParamSlider label="Gestation Lag (l)" val={params.l} min={1} max={10} step={1} onChange={v => setParams({...params, l: v})} icon={<Clock className="w-3 h-3 text-indigo-500" />} />
-                  <ParamSlider label="Sim Periods" val={params.periods} min={20} max={60} step={1} onChange={v => setParams({...params, periods: v})} />
-                </>
-              )}
-              {activeParamCategory === 'size' && (
-                <>
-                  <ParamSlider label="Output Target A" val={params.target_y_ratio_A} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_A: v})} icon={<Activity className="w-3 h-3 text-blue-500" />} />
-                  {mode === '3C' && <ParamSlider label="Output Target B" val={params.target_y_ratio_B} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_B: v})} />}
-                </>
-              )}
-              {activeParamCategory === 'frictions' && (
-                <>
-                  <ParamSlider label="Leader Tax (ωA)" val={params.w1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, w1: v})} />
-                  <ParamSlider label="Follower Tax (ωB)" val={params.w2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, w2: v})} />
-                  {mode === '3C' && <ParamSlider label="Laggard Tax (ωC)" val={params.w3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, w3: v})} />}
-                </>
-              )}
-              {activeParamCategory === 'growth' && (
-                <>
-                  <ParamSlider label="Leader g" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} />
-                  <ParamSlider label="Follower g" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} />
-                  {mode === '3C' && <ParamSlider label="Laggard g" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} />}
-                </>
-              )}
-            </div>
-          </div>
-          <div className="pt-4 border-t border-slate-100 pb-8">
-            <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100/80 shadow-inner">
-              <div className="flex items-center space-x-2.5 pb-3">
-                <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
-                <span className="text-[10px] font-black uppercase text-slate-500 tracking-[0.15em]">Scenario Settings</span>
-              </div>
-              <div className="space-y-7">
-                {activeScenario === 'hype' && (
-                  <>
-                    <ParamSlider label="Hype Peak" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Bubble adoption level." />
-                    <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="True tech ceiling." />
-                    <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Correction magnitude." />
-                  </>
-                )}
-                {activeScenario === 'tidal' && (
-                  <>
-                    <ParamSlider label="Max Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Final tech adoption." />
-                    <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={25} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Catch-up delay." />
-                    <ParamSlider label="Diffusion Mid" val={params.tidal_midpoint} min={5} max={30} step={1} onChange={v => setParams({...params, tidal_midpoint: v})} desc="Max diffusion speed." />
-                  </>
-                )}
-                {activeScenario === 'logjam' && (
-                  <>
-                    <ParamSlider label="Max Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Saturation level." />
-                    <ParamSlider label="Plateau Dur." val={params.logjam_plateau_dur} min={1} max={20} step={1} onChange={v => setParams({...params, logjam_plateau_dur: v})} desc="Adoption stall duration." />
-                    <ParamSlider label="Follower Lag" val={params.logjam_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, logjam_lag_B: v})} desc="Catch-up delay." />
-                  </>
-                )}
-                {activeScenario === 'gulf' && (
-                  <>
-                    <ParamSlider label="Max Saturation" val={params.gulf_max} min={0.5} max={1.0} step={0.05} onChange={v => setParams({...params, gulf_max: v})} desc="Leader adoption ceiling." />
-                    <ParamSlider label="Leakage to B" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Tech access for Follower." />
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-10 bg-white border-b border-slate-300 px-6 flex items-center justify-between shadow-sm shrink-0">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.2em]">Live Modeling Interface</h2>
-          <div className="flex items-center space-x-2 px-3 py-1 bg-blue-50 text-blue-700 rounded-full border border-blue-100">
-            <Activity className="w-3 h-3" />
-            <span className="text-[9px] font-black uppercase">{mode} {calibrationMode === 'real' ? 'REAL-WORLD' : 'ABSTRACT'} ENGINE</span>
-          </div>
-        </header>
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
-          {activeView === 'dashboard' ? (
-            <>
-              <div className="bg-white border border-slate-300 p-5 rounded-sm shadow-sm">
-                <div className="flex items-start space-x-4">
-                  <div className="bg-indigo-600 p-2 rounded text-white"><Info className="w-4 h-4" /></div>
-                  <div className="flex-1 text-[11px] text-slate-600 leading-relaxed max-w-4xl">
-                    <h3 className="text-[10px] font-black uppercase text-slate-800 tracking-widest mb-2">Model Context</h3>
-                    {mode === '3C' ? (
-                      <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> ({calibrationMode === 'real' ? leaderCode : 'A'}) automates tasks, its domestic returns to capital surge, pulling investment away from <span className="font-bold text-red-600">Follower</span> ({calibrationMode === 'real' ? followerCode : 'B'}) and <span className="font-bold text-slate-900">Laggard</span> ({calibrationMode === 'real' ? 'ROW' : 'C'}) regions. This causes divergence in wealth and wages until technology diffuses across the global economy.</span>
-                    ) : (
-                      <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> ({calibrationMode === 'real' ? leaderCode : 'A'}) automates tasks, its domestic returns to capital surge, pulling investment away from the <span className="font-bold text-red-600">Follower</span> ({calibrationMode === 'real' ? followerCode : 'B'}) region. This causes divergence in wealth and wages until technology diffuses across the global economy.</span>
-                    )}
-                  </div>
-                  <div className="flex flex-col space-y-3 pl-6 border-l border-slate-100 shrink-0">
-                    <VisualLegendItem color="#2563eb" label={calibrationMode === 'real' ? leaderCode : 'Leader'} type="solid" />
-                    <VisualLegendItem color="#dc2626" label={calibrationMode === 'real' ? followerCode : 'Follower'} type="solid" />
-                    {mode === '3C' && <VisualLegendItem color="#000000" label={calibrationMode === 'real' ? 'ROW' : 'Laggard'} type="dashed" />}
-                    {activeScenario === 'hype' && <VisualLegendItem color="#2563eb" label="Perceived" type="short-dash" />}
-                  </div>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <ChartBlock title="Tech Adoption (β)" desc="Percentage of tasks done by machines.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="beta1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="beta2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="beta3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}{activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Output Growth Rate (%)" desc="Periodic expansion speed of the economy.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" /><Line type="monotone" dataKey="dY1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="dY2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="dY3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Capital Stock Index (K)" desc="Machinery value located in country (Base=100).">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="k1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="k2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="k3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Starvation Gap (%)" desc="Economic loss due to domestic technology lag.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><ReferenceLine y={0} stroke="#94a3b8" /><Line type="monotone" dataKey="sg2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="sg3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-              </div>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <ChartBlock title="Realized Returns (%)" desc="Net profit earned from machinery.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="r1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="r2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="r3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Wealth Share % (p.c.)" desc="Value of machines owned relative to global average.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="sh1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="sh2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="GNI Index" desc="Total citizen income index.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Line type="monotone" dataKey="GNI1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="GNI2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="GNI3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Rentier Index (% GNI)" desc="Net profit from foreign machine ownership.">
-                  <ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><ReferenceLine y={0} stroke="#94a3b8" /><Line type="monotone" dataKey="rent1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="rent2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="rent3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <ChartBlock title="Labour Share of GNI (%)" desc="Portion of income paid as wages.">
-                  <ResponsiveContainer width="100%" height={140}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="ls1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="ls2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-                <ChartBlock title="Government Revenue Index (Base=100 at t=1)" desc="Income from taxing foreign machine operation.">
-                  <ResponsiveContainer width="100%" height={140}><LineChart data={simulationResults} margin={{ top: 5, right: 5, left: -25, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} domain={[1, 'dataMax']} /><YAxis fontSize={8} domain={['auto', 'auto']} /><Tooltip content={<CustomTooltip />} /><ReferenceLine y={100} stroke="#94a3b8" strokeDasharray="3 3" /><Line type="monotone" dataKey="rev1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} /><Line type="monotone" dataKey="rev2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />{mode === '3C' && <Line type="monotone" dataKey="rev3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}</LineChart></ResponsiveContainer>
-                </ChartBlock>
-              </div>
-              <div className="bg-white p-6 border border-slate-300 rounded-sm shadow-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xs font-black uppercase text-slate-500 tracking-widest flex items-center"><LayoutGrid className="w-4 h-4 mr-2 text-indigo-500" /> GNI Decomposition (Per Capita)</h3>
-                  <div className="flex space-x-6">
-                    <LegendItem color="#cc4c4c" label="Labor" /><LegendItem color="#4c4ccc" label="Domestic Capital" /><LegendItem color="#4ccc4c" label="Foreign Capital" />
-                  </div>
-                </div>
-                <div className={`grid ${mode === '2C' ? 'grid-cols-2' : 'grid-cols-3'} gap-6`}>
-                  {[...Array(mode === '2C' ? 2 : 3)].map((_, c) => (
-                    <div key={c} className="space-y-2">
-                      <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? (calibrationMode === 'real' ? leaderCode : 'A') : (c === 1 ? (calibrationMode === 'real' ? followerCode : 'B') : 'ROW')}</div>
-                      <ResponsiveContainer width="100%" height={180}>
-                        <AreaChart data={simulationResults.map(h => ({ t: h.t, ...h.gni_parts[c] }))} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={['auto', 'auto']} />
-                          <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} />
-                          <Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} />
-                          <Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ))}
-                </div>
-                <p className="mt-4 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-2 tracking-tight text-center">Breakdown of total income into labor wages and profits earned from domestic or foreign machine ownership.</p>
-              </div>
-            </>
-          ) : <AboutSection leaderCode={leaderCode} followerCode={followerCode} calibrationMode={calibrationMode} />}
-        </div>
-      </main>
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+        {icon}
+        <span>{title}</span>
+      </div>
+      <div className="space-y-3">{children}</div>
     </div>
   );
-};
+}
 
-export default App;
+function Slider({ label, value, onChange, min, max, step = 0.001 }) {
+  return (
+    <label className="block">
+      <div className="mb-1 flex items-center justify-between text-xs text-slate-600">
+        <span>{label}</span>
+        <span className="font-mono">{Number(value).toFixed(3)}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-slate-800"
+      />
+    </label>
+  );
+}
+
+function ChartCard({ title, children }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3 className="mb-3 text-sm font-semibold text-slate-700">{title}</h3>
+      <div className="h-72">{children}</div>
+    </div>
+  );
+}
+
+function shadeAreas(data) {
+  const out = [];
+  let start = null;
+  data.forEach((d, i) => {
+    if (d.autarky === 1 && start === null) start = d.period;
+    const nextAut = i < data.length - 1 ? data[i + 1].autarky : 0;
+    if (start !== null && (d.autarky === 1 && nextAut === 0)) {
+      out.push({ x1: start, x2: d.period });
+      start = null;
+    }
+  });
+  return out;
+}
+
+function SummaryStat({ label, value }) {
+  return (
+    <div className="rounded-xl bg-slate-50 p-3">
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-slate-800">{value}</div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [countryCount, setCountryCount] = useState(2);
+  const [scenario, setScenario] = useState('hype');
+  const [omega, setOmega] = useState([0.001, 0.002, 0.0]);
+  const [tau, setTau] = useState([0.001, 0.002, 0.001]);
+  const [lag, setLag] = useState(3);
+
+  const data = useMemo(() => {
+    if (countryCount === 2) {
+      return simulate2C(scenario, { ...DEFAULTS_2C, omega: omega.slice(0, 2), tau: tau.slice(0, 2), l: lag });
+    }
+    return simulate3C(scenario, { ...DEFAULTS_3C, omega, tau, l: lag });
+  }, [countryCount, scenario, omega, tau, lag]);
+
+  const chart = data.chart;
+  const shades = shadeAreas(chart);
+  const last = chart[chart.length - 1] || {};
+  const labels = COUNTRY_LABELS.slice(0, countryCount);
+
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <div className="mx-auto max-w-7xl px-4 py-8">
+        <div className="mb-6 rounded-3xl bg-gradient-to-r from-slate-900 to-slate-700 p-6 text-white shadow-lg">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-sm text-slate-300"><Globe size={16} /> Capital Flows Project</div>
+              <h1 className="text-3xl font-bold">Task-based automation, taxes, and cross-border capital reallocation</h1>
+              <p className="mt-2 max-w-3xl text-sm text-slate-300">
+                This update folds your new MATLAB logic into the web app: exact two-country corner solutions, a numeric three-country portfolio solver, source taxes on foreigners, residence taxes on outbound investors, and the four scenario paths.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCountryCount(2);
+                setScenario('hype');
+                setOmega([0.001, 0.002, 0.0]);
+                setTau([0.001, 0.002, 0.001]);
+                setLag(3);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20"
+            >
+              <RefreshCw size={16} /> Reset defaults
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[320px,1fr]">
+          <div className="space-y-4">
+            <ControlCard title="Model" icon={<Landmark size={16} />}>
+              <div className="grid grid-cols-2 gap-2">
+                {[2, 3].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setCountryCount(n)}
+                    className={`rounded-xl px-3 py-2 text-sm font-medium ${countryCount === n ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'}`}
+                  >
+                    {n} countries
+                  </button>
+                ))}
+              </div>
+              <select
+                value={scenario}
+                onChange={(e) => setScenario(e.target.value)}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                {SCENARIOS.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <Slider label="Installation lag (l)" value={lag} onChange={setLag} min={1} max={8} step={1} />
+            </ControlCard>
+
+            <ControlCard title="Policy wedges" icon={<SlidersHorizontal size={16} />}>
+              {labels.map((label, i) => (
+                <div key={label} className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Country {label}</div>
+                  <Slider
+                    label={`Source tax on foreigners (omega_${label})`}
+                    value={omega[i]}
+                    onChange={(v) => setOmega((prev) => prev.map((x, idx) => (idx === i ? v : x)))}
+                    min={0}
+                    max={0.05}
+                    step={0.001}
+                  />
+                  <Slider
+                    label={`Residence tax on own investors abroad (tau_${label})`}
+                    value={tau[i]}
+                    onChange={(v) => setTau((prev) => prev.map((x, idx) => (idx === i ? v : x)))}
+                    min={0}
+                    max={0.05}
+                    step={0.001}
+                  />
+                </div>
+              ))}
+            </ControlCard>
+          </div>
+
+          <div className="space-y-6">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <SummaryStat label="Terminal output index A" value={(last.output_A || 0).toFixed(1)} />
+              <SummaryStat label="Terminal NIIP A" value={(last.niip_A || 0).toFixed(2)} />
+              <SummaryStat label="Terminal offshore share A" value={`${(last.offshore_A || 0).toFixed(1)}%`} />
+              <SummaryStat label="Autarky periods" value={chart.reduce((s, d) => s + d.autarky, 0)} />
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-2">
+              <ChartCard title="Automation paths">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    {shades.map((s, idx) => <ReferenceArea key={idx} x1={s.x1} x2={s.x2} fill="#cbd5e1" fillOpacity={0.35} />)}
+                    <Line type="monotone" dataKey="beta_A" stroke={COLORS[0]} dot={false} strokeWidth={2} name="A realized" />
+                    <Line type="monotone" dataKey="beta_A_perc" stroke={COLORS[0]} dot={false} strokeDasharray="5 5" name="A perceived" />
+                    <Line type="monotone" dataKey="beta_B" stroke={COLORS[1]} dot={false} strokeWidth={2} name="B realized" />
+                    {countryCount === 3 && <Line type="monotone" dataKey="beta_C" stroke={COLORS[2]} dot={false} strokeWidth={2} name="C realized" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Output index (t = 0 equals 100)">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    {shades.map((s, idx) => <ReferenceArea key={idx} x1={s.x1} x2={s.x2} fill="#cbd5e1" fillOpacity={0.35} />)}
+                    <Line type="monotone" dataKey="output_A" stroke={COLORS[0]} dot={false} strokeWidth={2} name="A" />
+                    <Line type="monotone" dataKey="output_B" stroke={COLORS[1]} dot={false} strokeWidth={2} name="B" />
+                    {countryCount === 3 && <Line type="monotone" dataKey="output_C" stroke={COLORS[2]} dot={false} strokeWidth={2} name="C" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Returns on installed capital">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="r_A" stroke={COLORS[0]} dot={false} strokeWidth={2} name="A" />
+                    <Line type="monotone" dataKey="r_B" stroke={COLORS[1]} dot={false} strokeWidth={2} name="B" />
+                    {countryCount === 3 && <Line type="monotone" dataKey="r_C" stroke={COLORS[2]} dot={false} strokeWidth={2} name="C" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Net international investment position">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Area type="monotone" dataKey="niip_A" stroke={COLORS[0]} fill={COLORS[0]} fillOpacity={0.12} name="A" />
+                    <Area type="monotone" dataKey="niip_B" stroke={COLORS[1]} fill={COLORS[1]} fillOpacity={0.12} name="B" />
+                    {countryCount === 3 && <Area type="monotone" dataKey="niip_C" stroke={COLORS[2]} fill={COLORS[2]} fillOpacity={0.12} name="C" />}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Offshore capital share (%)">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="offshore_A" stroke={COLORS[0]} dot={false} strokeWidth={2} name="A" />
+                    <Line type="monotone" dataKey="offshore_B" stroke={COLORS[1]} dot={false} strokeWidth={2} name="B" />
+                    {countryCount === 3 && <Line type="monotone" dataKey="offshore_C" stroke={COLORS[2]} dot={false} strokeWidth={2} name="C" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Gross national income">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chart}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="gni_A" stroke={COLORS[0]} dot={false} strokeWidth={2} name="A" />
+                    <Line type="monotone" dataKey="gni_B" stroke={COLORS[1]} dot={false} strokeWidth={2} name="B" />
+                    {countryCount === 3 && <Line type="monotone" dataKey="gni_C" stroke={COLORS[2]} dot={false} strokeWidth={2} name="C" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><TrendingUp size={16} /> What changed in this version</div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-sm text-slate-600">
+                <div className="rounded-xl bg-slate-50 p-3">Two-country solver now respects exact autarky and corner-flow cases instead of a smooth interior approximation.</div>
+                <div className="rounded-xl bg-slate-50 p-3">Three-country allocation uses repeated pairwise exact transfers, which allows split portfolios and endogenous support patterns.</div>
+                <div className="rounded-xl bg-slate-50 p-3">Both source taxes on foreigners and residence taxes on outbound investors are exposed directly in the UI.</div>
+                <div className="rounded-xl bg-slate-50 p-3">Scenario paths mirror the MATLAB files: Hype, Tidal Flow, Logjam, and The Gulf.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
