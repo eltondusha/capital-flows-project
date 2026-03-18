@@ -33,5 +33,6 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.2.1",
     "vite": "^7.3.1"
-  }
+  },
+  "homepage": "https://eltondusha.github.io/capital-flows-project/"
 }
