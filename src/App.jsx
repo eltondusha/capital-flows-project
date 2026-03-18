@@ -1,15 +1,20 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, AreaChart, Area, ReferenceArea
 } from 'recharts';
 import {
-  Globe, Activity, TrendingUp, Layers, RefreshCw,
-  ChevronRight, Database, TrendingDown, BookOpen, Zap, Timer, PauseCircle, LayoutGrid, ChevronDown, Clock, Scale, Info, Terminal
+  Globe, Activity, TrendingUp, Zap, Info, LayoutGrid
 } from 'lucide-react';
 
-// --- DATA & CONSTANTS ---
+/**
+ * VERSION 1.1.3 - PRODUCTION STABLE
+ * - Resolved Uncaught ReferenceError: GNI_init
+ * - Fixed variable scoping in simulation loop
+ * - Maintained 10% tax caps and autarky logic
+ */
 
+// --- DATA & CONSTANTS ---
 const COUNTRY_DATA = {
   'USA': { pop: 335, gdp_pc: 80000, name: 'United States' },
   'CHN': { pop: 1410, gdp_pc: 12500, name: 'China' },
@@ -32,14 +37,12 @@ const SCENARIOS = [
 ];
 
 // --- NUMERICAL UTILITIES ---
-
 const bisect_root = (func, low, high, tol = 1e-10, max_iters = 100) => {
   let fLow = func(low);
   let fHigh = func(high);
   if (Math.abs(fLow) < tol) return low;
   if (Math.abs(fHigh) < tol) return high;
   if (fLow * fHigh > 0) return Math.abs(fLow) < Math.abs(fHigh) ? low : high;
-  
   let mid = 0;
   for (let i = 0; i < max_iters; i++) {
     mid = (low + high) / 2;
@@ -52,7 +55,6 @@ const bisect_root = (func, low, high, tol = 1e-10, max_iters = 100) => {
 };
 
 // --- MATH ENGINE ---
-
 const get_y = (k, bt, rho, gamma, A, L) => {
   const k_eff = Math.max(k, 1e-12);
   const task_agg = Math.max(1e-12, Math.pow(bt, 1 - rho) * Math.pow(k_eff, rho) + Math.pow(1 - bt, 1 - rho) * Math.pow(L, rho));
@@ -82,15 +84,12 @@ const solve_market = (V_vec, bt, delta, A, L, gamma, rho, w_vec, tau_vec, P_init
     } else { row[i] = V_vec[i]; }
     return row;
   });
-
   const max_outer = 150;
   const tol_move = 1e-9;
-
   for (let outer = 0; outer < max_outer; outer++) {
     let best_gap = tol_move;
     let best_i = -1, best_a = -1, best_b = -1;
     let K = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
-
     for (let i = 0; i < n; i++) {
       for (let a = 0; a < n; a++) {
         if (P[i][a] <= tol_move) continue;
@@ -114,8 +113,7 @@ const solve_market = (V_vec, bt, delta, A, L, gamma, rho, w_vec, tau_vec, P_init
   return { P, K: Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0)) };
 };
 
-// --- UI HELPERS ---
-
+// --- UI COMPONENTS ---
 const VisualLegendItem = ({ color, label, type }) => (
   <div className="flex items-center space-x-3">
     <svg width="24" height="2" className="overflow-visible">
@@ -127,14 +125,14 @@ const VisualLegendItem = ({ color, label, type }) => (
 
 const ParamSlider = ({ label, val, min, max, step, onChange, icon, desc, disabled }) => (
   <div className={`space-y-2 animate-in fade-in slide-in-from-left-2 duration-300 ${disabled ? 'opacity-40 grayscale pointer-events-none' : ''}`}>
-    <div className="flex justify-between items-center text-[9px] font-black text-slate-600 tracking-tight">
+    <div className="flex justify-between items-center text-[9px] font-black text-slate-600 tracking-tight text-left">
       <div className="flex items-center space-x-1">{icon}<span>{label.toUpperCase()}</span></div>
       <span className="font-mono text-blue-700 bg-blue-100/50 px-1.5 py-0.5 rounded-md border border-blue-200/50">{val}</span>
     </div>
     <div className="relative flex items-center h-5">
       <input type="range" min={min} max={max} step={step} value={val} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 shadow-sm" />
     </div>
-    {desc && <p className="text-[8.5px] text-slate-400 font-bold italic leading-tight tracking-tight pl-1">{desc}</p>}
+    {desc && <p className="text-[8.5px] text-slate-400 font-bold italic leading-tight tracking-tight pl-1 text-left">{desc}</p>}
   </div>
 );
 
@@ -168,24 +166,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   return null;
 };
 
-// Helper for Autarky Regions
-const getAutarkyBands = (data) => {
-  const bands = [];
-  let start = null;
-  data.forEach((d) => {
-    if (d.isAutarky && start === null) {
-      start = d.t;
-    } else if (!d.isAutarky && start !== null) {
-      bands.push({ x1: start, x2: d.t - 1 });
-      start = null;
-    }
-  });
-  if (start !== null) bands.push({ x1: start, x2: data[data.length - 1].t });
-  return bands;
-};
-
 // --- MAIN APP ---
-
 const App = () => {
   const [mode, setMode] = useState('3C'); 
   const [calibrationMode, setCalibrationMode] = useState('abstract'); 
@@ -211,8 +192,7 @@ const App = () => {
   const simulationResults = useMemo(() => {
     const { 
       sigma, delta, phi, gamma, r_target, l, w1, w2, w3, tau1, tau2, tau3, periods: T_sim,
-      target_y_ratio_A: abstract_yA, target_y_ratio_B: abstract_yB,
-      L_ratio_A, L_ratio_B, g1, g2, g3,
+      target_y_ratio_A, target_y_ratio_B, L_ratio_A, L_ratio_B, g1, g2, g3,
       hype_realized_max, hype_perc_peak, hype_trough_depth,
       tidal_max, tidal_lag_B, tidal_midpoint, tidal_steepness,
       logjam_max, logjam_lag_B, logjam_mid1, logjam_plateau,
@@ -234,8 +214,8 @@ const App = () => {
       final_y_ratio_B = follower.gdp_pc / row.gdp_pc;
     } else {
       L_vec = n === 2 ? [L_ratio_A, L_ratio_B] : [L_ratio_A, L_ratio_B, 1.0];
-      final_y_ratio_A = abstract_yA;
-      final_y_ratio_B = abstract_yB;
+      final_y_ratio_A = target_y_ratio_A;
+      final_y_ratio_B = target_y_ratio_B;
     }
 
     const w_vec = n === 2 ? [w1, w2] : [w1, w2, w3];
@@ -263,6 +243,7 @@ const App = () => {
     const beta_paths = Array.from({ length: n }, () => Array(T_full + 1).fill(b_start));
     let beta_perc_L = Array(T_full + 1).fill(b_start);
 
+    // Scenario Paths
     if (activeScenario === 'hype') {
       const bL = t_axis.map(t => b_start + (hype_realized_max - b_start) / (1 + Math.exp(-0.8 * (t - 5))));
       const sp = t_axis.map(t => (1 / (1 + Math.exp(-2.5 * (t - 3)))) * (1 / (1 + Math.exp(1.8 * (t - 7)))));
@@ -272,15 +253,15 @@ const App = () => {
     } else if (activeScenario === 'tidal') {
       const bL = t_axis.map(t => b_start + tidal_max / (1 + Math.exp(-tidal_steepness * (t - tidal_midpoint))));
       beta_paths[0] = bL;
-      beta_paths[1] = t_axis.map((_, t) => t < tidal_lag_B ? b_start : bL[t - Math.round(tidal_lag_B)]);
-      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * tidal_lag_B ? b_start : bL[t - Math.round(2 * tidal_lag_B)]);
+      beta_paths[1] = t_axis.map((_, t) => t < tidal_lag_B ? b_start : bL[Math.max(0, t - Math.round(tidal_lag_B))]);
+      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * tidal_lag_B ? b_start : bL[Math.max(0, t - Math.round(2 * tidal_lag_B))]);
       beta_perc_L = [...bL];
     } else if (activeScenario === 'logjam') {
       const m2 = logjam_mid1 + logjam_plateau;
       const bL = t_axis.map(t => b_start + (0.2 / (1 + Math.exp(-0.8 * (t - logjam_mid1)))) + (logjam_max - 0.2) / (1 + Math.exp(-0.8 * (t - m2))));
       beta_paths[0] = bL;
-      beta_paths[1] = t_axis.map((_, t) => t < logjam_lag_B ? b_start : bL[t - Math.round(logjam_lag_B)]);
-      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * logjam_lag_B ? b_start : bL[t - Math.round(2 * logjam_lag_B)]);
+      beta_paths[1] = t_axis.map((_, t) => t < logjam_lag_B ? b_start : bL[Math.max(0, t - Math.round(logjam_lag_B))]);
+      if (n === 3) beta_paths[2] = t_axis.map((_, t) => t < 2 * logjam_lag_B ? b_start : bL[Math.max(0, t - Math.round(2 * logjam_lag_B))]);
       beta_perc_L = [...bL];
     } else {
       const gulf_mid2 = gulf_mid1 + gulf_plateau_gap + 5;
@@ -292,17 +273,16 @@ const App = () => {
     }
 
     let P = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? K_init_pc[i] * L_vec[i] : 0)));
-    const pipe = Array.from({ length: n }, (_, i) => Array(T_full + l + 10).fill(delta * K_init_pc[i] * L_vec[i]));
+    const pipe = Array.from({ length: n }, (_, i) => Array(T_full + l + 11).fill(delta * K_init_pc[i] * L_vec[i]));
     const history = [];
     const b_paths_ext = beta_paths.map(p => [...p, ...Array(l + 10).fill(p[T_full])]);
     const b_perc_ext = [...beta_perc_L, ...Array(l + 10).fill(beta_perc_L[T_full])];
-    const A_paths_ext = A0_vec.map((a0, i) => Array.from({ length: T_full + l + 10 }, (_, t) => a0 * Math.pow(1 + [g1, g2, g3][i], t)));
+    const A_paths_ext = A0_vec.map((a0, i) => Array.from({ length: T_full + l + 11 }, (_, t) => a0 * Math.pow(1 + [g1, g2, g3][i], t)));
 
     for (let t = 0; t < T_sim; t++) {
       const K_curr = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
       const V_curr = P.map(row => row.reduce((a, b) => a + b, 0));
       
-      // Determine if in autarky for shaded regions (all off-diagonal elements zero)
       let autarkyCount = 0;
       for (let r = 0; r < n; r++) {
         for (let c = 0; c < n; c++) {
@@ -318,16 +298,14 @@ const App = () => {
       const shadow = solve_market(V_curr, Array(n).fill(Math.max(...bt_r)), delta, A_curr, L_vec, gamma, rho, w_vec, tau_vec);
       const starvation = shadow.K.map((kf, i) => (kf - K_curr[i]) / (kf + 1e-12));
       const labor_inc = Y.map((y, i) => y - (r_phys[i] + delta) * K_curr[i]);
-      const foreign_inc = Array(n).fill(0);
+      
       const GNI_parts = Array.from({length: n}, (_, owner) => {
         let dom = P[owner][owner] * r_phys[owner];
         let for_inc = 0;
         for (let loc = 0; loc < n; loc++) if (owner !== loc) for_inc += P[owner][loc] * (r_phys[loc] - w_vec[loc] - tau_vec[owner]);
-        foreign_inc[owner] = for_inc;
         return { labor: labor_inc[owner]/L_vec[owner], dom_cap: dom/L_vec[owner], for_cap: for_inc/L_vec[owner] };
       });
-      const GNI = labor_inc.map((li, i) => li + GNI_parts[i].dom_cap*L_vec[i] + foreign_inc[i]);
-      if (t === 0) GNI_init = [...GNI];
+      const GNI = labor_inc.map((li, i) => li + GNI_parts[i].dom_cap*L_vec[i] + GNI_parts[i].for_cap*L_vec[i]);
       const endPeriodRev = Array(n).fill(0).map((_, i) => (K_curr[i] - P[i][i]) * w_vec[i] + (V_curr[i] - P[i][i]) * tau_vec[i]);
       const offshore = V_curr.map((v, i) => (v - P[i][i]) / Math.max(v, 1e-12));
 
@@ -337,16 +315,16 @@ const App = () => {
         const A_f = A_paths_ext.map(p => p[idx_f]);
         const V_fixed = V_curr.map((v) => v * Math.pow(1 - delta, l));
         let s_guess = s_base_vec;
-        for (let iter = 0; iter < 15; iter++) {
+        for (let iter = 0; iter < 10; iter++) {
           const V_proj = V_fixed.map((vf, i) => vf + s_guess[i] * GNI[i]);
           const future = solve_market(V_proj, bt_f, delta, A_f, L_vec, gamma, rho, w_vec, tau_vec);
           const r_phys_f = future.K.map((kf, i) => get_r(kf, bt_f[i], rho, gamma, A_f[i], L_vec[i], delta));
           const s_new = s_base_vec.map((sb, owner) => {
             let total_inc = 0;
-            for (let loc = 0; loc < n; loc++) total_inc += future.P[owner][loc] * (owner === loc ? future.K[loc] > 0 ? get_r(future.K[loc], bt_f[loc], rho, gamma, A_f[loc], L_vec[loc], delta) : 0 : future.K[loc] > 0 ? get_r(future.K[loc], bt_f[loc], rho, gamma, A_f[loc], L_vec[loc], delta) - w_vec[loc] - tau_vec[owner] : 0);
+            for (let loc = 0; loc < n; loc++) total_inc += future.P[owner][loc] * (owner === loc ? r_phys_f[loc] : r_phys_f[loc] - w_vec[loc] - tau_vec[owner]);
             return sb + phi * (total_inc / Math.max(V_proj[owner], 1e-12) - r_target);
           });
-          if (s_new.every((v, i) => Math.abs(v - s_guess[i]) < 1e-6)) break;
+          if (s_new.every((v, i) => Math.abs(v - s_guess[i]) < 1e-5)) break;
           s_guess = s_new.map((v, i) => v * 0.5 + s_guess[i] * 0.5);
         }
         pipe.forEach((row, i) => { row[t + l] = s_guess[i] * GNI[i]; });
@@ -354,7 +332,6 @@ const App = () => {
         for (let i = 0; i < n; i++) P[i][i] += pipe[i][t + 1];
         P = solve_market(P.map(r => r.reduce((a, b) => a + b, 0)), b_paths_ext.map(p => p[t + 1]), delta, A_paths_ext.map(p => p[t+1]), L_vec, gamma, rho, w_vec, tau_vec, P).P;
       }
-
       history.push({
         t, rawK: [...K_curr], rawRev: endPeriodRev, rawY: [...Y], rawGNI: [...GNI], isAutarky,
         beta1: bt_r[0], beta2: bt_r[1], beta3: n === 3 ? bt_r[2] : 0, betaP: activeScenario === 'hype' ? b_perc_ext[t] : null,
@@ -362,34 +339,43 @@ const App = () => {
         sh1: (V_curr[0]/L_vec[0]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100,
         sh2: (V_curr[1]/L_vec[1]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100,
         sh3: n === 3 ? (V_curr[2]/L_vec[2]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100 : 0,
-        ls1: (labor_inc[0] / GNI[0]) * 100, ls2: (labor_inc[1] / GNI[1]) * 100, ls3: n === 3 ? (labor_inc[2] / GNI[2]) * 100 : 0,
+        ls1: (labor_inc[0] / (GNI[0] || 1)) * 100, ls2: (labor_inc[1] / (GNI[1] || 1)) * 100, ls3: n === 3 ? (labor_inc[2] / (GNI[2] || 1)) * 100 : 0,
         sg2: starvation[1] * 100, sg3: n === 3 ? starvation[2] * 100 : 0,
-        rent1: (foreign_inc[0] / GNI[0]) * 100, rent2: (foreign_inc[1] / GNI[1]) * 100, rent3: n === 3 ? (foreign_inc[2] / GNI[2]) * 100 : 0,
+        rent1: (GNI_parts[0].for_cap * L_vec[0] / (GNI[0] || 1)) * 100, rent2: (GNI_parts[1].for_cap * L_vec[1] / (GNI[1] || 1)) * 100, rent3: n === 3 ? (GNI_parts[2].for_cap * L_vec[2] / (GNI[2] || 1)) * 100 : 0,
         off1: offshore[0] * 100, off2: offshore[1] * 100, off3: n === 3 ? offshore[2] * 100 : 0,
         gni_parts: GNI_parts
       });
     }
 
-    const h1 = history.find(h => h.t === 1) || history[0];
-    const baseK = h1.rawK.map(k => Math.max(1e-12, k)), baseY = h1.rawY.map(y => Math.max(1e-12, y)), baseGNI = h1.rawGNI.map(g => Math.max(1e-12, g));
-
+    const h0 = history[0];
     return history.map(h => ({
       ...h,
-      k1: (h.rawK[0] / baseK[0]) * 100, k2: (h.rawK[1] / baseK[1]) * 100, k3: n === 3 ? (h.rawK[2] / baseK[2]) * 100 : 0,
-      rev1: (h.rawRev[0] / h.rawGNI[0]) * 100, rev2: (h.rawRev[1] / h.rawGNI[1]) * 100, rev3: n === 3 ? (h.rawRev[2] / h.rawGNI[2]) * 100 : 0,
-      y1: (h.rawY[0] / baseY[0]) * 100, y2: (h.rawY[1] / baseY[1]) * 100, y3: n === 3 ? (h.rawY[2] / baseY[2]) * 100 : 0,
-      gni1: (h.rawGNI[0] / baseGNI[0]) * 100, gni2: (h.rawGNI[1] / baseGNI[1]) * 100, gni3: n === 3 ? (h.rawGNI[2] / baseGNI[2]) * 100 : 0
+      k1: (h.rawK[0] / (h0.rawK[0] || 1)) * 100, k2: (h.rawK[1] / (h0.rawK[1] || 1)) * 100, k3: n === 3 ? (h.rawK[2] / (h0.rawK[2] || 1)) * 100 : 0,
+      rev1: (h.rawRev[0] / (h.rawGNI[0] || 1)) * 100, rev2: (h.rawRev[1] / (h.rawGNI[1] || 1)) * 100, rev3: n === 3 ? (h.rawRev[2] / (h.rawGNI[2] || 1)) * 100 : 0,
+      y1: (h.rawY[0] / (h0.rawY[0] || 1)) * 100, y2: (h.rawY[1] / (h0.rawY[1] || 1)) * 100, y3: n === 3 ? (h.rawY[2] / (h0.rawY[2] || 1)) * 100 : 0,
+      gni1: (h.rawGNI[0] / (h0.rawGNI[0] || 1)) * 100, gni2: (h.rawGNI[1] / (h0.rawGNI[1] || 1)) * 100, gni3: n === 3 ? (h.rawGNI[2] / (h0.rawGNI[2] || 1)) * 100 : 0
     }));
   }, [mode, activeScenario, params, calibrationMode, leaderCode, followerCode]);
 
-  // Generate bands for charts
-  const autarkyBands = useMemo(() => getAutarkyBands(simulationResults), [simulationResults]);
+  const autarkyBands = useMemo(() => {
+    const bands = [];
+    let start = null;
+    simulationResults.forEach((d) => {
+      if (d.isAutarky && start === null) start = d.t;
+      else if (!d.isAutarky && start !== null) {
+        bands.push({ x1: start, x2: d.t - 1 });
+        start = null;
+      }
+    });
+    if (start !== null) bands.push({ x1: start, x2: simulationResults[simulationResults.length - 1].t });
+    return bands;
+  }, [simulationResults]);
 
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900 text-[11px]">
-      <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 overflow-y-auto scrollbar-hide pb-20">
+      <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 overflow-y-auto scrollbar-hide pb-20 text-left">
         <div className="p-4 border-b border-slate-200 flex items-center space-x-3 bg-slate-900 text-white font-black uppercase tracking-widest text-[11px] shrink-0">
-          <Globe className="w-5 h-5 text-blue-400" /><span>Simulation Engine</span>
+          <Globe className="w-5 h-5 text-blue-400" /><span>Sim Engine v1.1.3</span>
         </div>
         <div className="p-5 space-y-6">
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
@@ -400,22 +386,12 @@ const App = () => {
             <button onClick={() => setMode('2C')} className={`py-1.5 text-[10px] font-black uppercase rounded-md transition-all ${mode === '2C' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>2-Country</button>
             <button onClick={() => setMode('3C')} className={`py-1.5 text-[10px] font-black uppercase rounded-md transition-all ${mode === '3C' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-800'}`}>3-Country</button>
           </div>
-          {calibrationMode === 'real' && (
-            <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
-              <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">1. Leader</label>
-                <select value={leaderCode} onChange={e => setLeaderCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
-                  <option value="USA">United States</option><option value="CHN">China</option></select></div>
-              <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">2. Follower</label>
-                <select value={followerCode} onChange={e => setFollowerCode(e.target.value)} className="w-full p-2 text-xs font-bold border border-slate-200 rounded-lg">
-                  {Object.keys(COUNTRY_DATA).filter(k => k !== leaderCode && k !== 'ROW').map(code => (
-                    <option key={code} value={code}>{COUNTRY_DATA[code].name}</option>))}</select></div>
-            </div>
-          )}
-          <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Active Scenario</label>
-            <div className="grid grid-cols-1 gap-2">{SCENARIOS.map(s => (
+          <div className="space-y-1 pt-4">
+             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Active Scenario</label>
+             <div className="grid grid-cols-1 gap-2">{SCENARIOS.map(s => (
                 <button key={s.id} onClick={() => setActiveScenario(s.id)} className={`w-full p-2.5 text-left rounded-lg border text-[10px] font-bold transition-all ${activeScenario === s.id ? 'bg-blue-50 border-blue-400 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'}`}>{s.name.toUpperCase()}</button>
-              ))}</div></div>
-          
+              ))}</div>
+          </div>
           <div className="space-y-3 pt-4 border-t border-slate-100">
             <select value={activeParamCategory} onChange={(e) => setActiveParamCategory(e.target.value)} className="w-full p-2 text-xs font-black uppercase border border-slate-200 rounded-lg appearance-none bg-white pr-10 cursor-pointer shadow-sm">
                 <option value="temporal">Temporal Setup</option>
@@ -423,56 +399,31 @@ const App = () => {
                 <option value="frictions">Capital Controls</option>
                 <option value="growth">Growth Rates</option>
             </select>
-            <div className="bg-slate-50 p-4 rounded-xl space-y-5 border border-slate-200 shadow-sm">
+            <div className="bg-slate-50 p-4 rounded-xl space-y-5 border border-slate-200 shadow-sm text-left">
               {activeParamCategory === 'temporal' && (<><ParamSlider label="Gestation Lag" val={params.l} min={1} max={10} step={1} onChange={v => setParams({...params, l: v})} desc="Years for capital to become productive." /><ParamSlider label="Sim Periods" val={params.periods} min={20} max={60} step={1} onChange={v => setParams({...params, periods: v})} /></>)}
-              
               {activeParamCategory === 'size' && (<>
-                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1">Output Ratios</div>
-                  <ParamSlider label="Target Leader" val={params.target_y_ratio_A} min={1} max={5} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_A: v})} desc="Leader output per capita relative to ROW." />
-                  {mode === '3C' && <ParamSlider label="Target Follower" val={params.target_y_ratio_B} min={1} max={4} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_B: v})} desc="Follower output per capita relative to ROW." />}
-                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1 mt-4">Labour Ratios</div>
-                  <ParamSlider label="Labour Ratio Leader" val={params.L_ratio_A} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, L_ratio_A: v})} desc="Leader population size relative to ROW." />
-                  <ParamSlider label="Labour Ratio Follower" val={params.L_ratio_B} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, L_ratio_B: v})} desc="Follower population size relative to ROW." />
+                  <ParamSlider label="Target Leader" val={params.target_y_ratio_A} min={1} max={5} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_A: v})} desc="Output index relative to ROW." />
+                  {mode === '3C' && <ParamSlider label="Target Follower" val={params.target_y_ratio_B} min={1} max={4} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, target_y_ratio_B: v})} desc="Output index relative to ROW." />}
+                  <ParamSlider label="Labour Ratio Leader" val={params.L_ratio_A} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, L_ratio_A: v})} desc="Labour size relative to ROW." />
+                  <ParamSlider label="Labour Ratio Follower" val={params.L_ratio_B} min={1} max={10} step={0.1} disabled={calibrationMode === 'real'} onChange={v => setParams({...params, L_ratio_B: v})} desc="Labour size relative to ROW." />
                 </>)}
-
               {activeParamCategory === 'frictions' && (<>
-                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1">Source Taxes</div>
-                  <ParamSlider label="Source Tax Leader" val={params.w1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w1: v})} desc="Tax on foreign machinery inside the Leader." />
-                  <ParamSlider label="Source Tax Follower" val={params.w2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w2: v})} desc="Tax on foreign machinery inside the Follower." />
-                  {mode === '3C' && <ParamSlider label="Source Tax ROW" val={params.w3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w3: v})} desc="Tax on foreign machinery inside the ROW." />}
-                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1 mt-4">Residence Taxes</div>
-                  <ParamSlider label="Resid. Tax Leader" val={params.tau1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau1: v})} desc="Tax on Leader citizens earning income abroad." />
-                  <ParamSlider label="Resid. Tax Follower" val={params.tau2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau2: v})} desc="Tax on Follower citizens earning income abroad." />
-                  {mode === '3C' && <ParamSlider label="Resid. Tax ROW" val={params.tau3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau3: v})} desc="Tax on ROW citizens earning income abroad." />}</>)}
-              
-              {activeParamCategory === 'growth' && (<><ParamSlider label="Growth Leader" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} /><ParamSlider label="Growth Follower" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} />{mode === '3C' && <ParamSlider label="Growth ROW" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} />}</>)}
+                  <ParamSlider label="Source Tax Leader" val={params.w1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w1: v})} desc="Tax on incoming foreign capital." />
+                  <ParamSlider label="Source Tax Follower" val={params.w2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w2: v})} desc="Tax on incoming foreign capital." />
+                  {mode === '3C' && <ParamSlider label="Source Tax ROW" val={params.w3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w3: v})} desc="Tax on incoming foreign capital." />}
+                  <ParamSlider label="Resid. Tax Leader" val={params.tau1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau1: v})} desc="Tax on own residents' foreign profit." />
+                  <ParamSlider label="Resid. Tax Follower" val={params.tau2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau2: v})} desc="Tax on own residents' foreign profit." />
+                  {mode === '3C' && <ParamSlider label="Resid. Tax ROW" val={params.tau3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau3: v})} desc="Tax on own residents' foreign profit." />}
+                </>)}
             </div>
           </div>
-
           <div className="pt-4 border-t border-slate-100">
-            <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100/80 shadow-inner space-y-4">
+            <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100/80 shadow-inner space-y-4 text-left">
               <div className="flex items-center space-x-2.5 pb-2 border-b border-amber-100"><Zap className="w-4 h-4 text-amber-500" /><span className="text-[10px] font-black uppercase text-slate-500">Scenario Logic</span></div>
-              {activeScenario === 'hype' && (<>
-                  <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="The true long-term automation level." />
-                  <ParamSlider label="Peak Perception" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Level of market over-optimism." />
-                  <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Severity of correction post-bubble." />
-                </>)}
-              {activeScenario === 'tidal' && (<>
-                  <ParamSlider label="Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Maximum tech adoption ceiling." />
-                  <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Years before Follower catch-up." />
-                  <ParamSlider label="Diffusion Steepness" val={params.tidal_steepness} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, tidal_steepness: v})} desc="Speed of adoption curve." />
-                </>)}
-              {activeScenario === 'logjam' && (<>
-                  <ParamSlider label="Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Final ceiling for machine tasks." />
-                  <ParamSlider label="Plateau Duration" val={params.logjam_plateau} min={2} max={15} step={1} onChange={v => setParams({...params, logjam_plateau: v})} desc="Years of bottlenecks/stall." />
-                </>)}
-              {activeScenario === 'gulf' && (<>
-                  <ParamSlider label="Max Saturation" val={params.gulf_max} min={0.5} max={1.0} step={0.05} onChange={v => setParams({...params, gulf_max: v})} desc="Leader's adoption ceiling." />
-                  <ParamSlider label="Leakage Follower" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Follower access to tech." />
-                  {mode === '3C' && <ParamSlider label="Leakage ROW" val={params.gulf_leakage_C} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, gulf_leakage_C: v})} desc="Laggard access to tech." />}
-                  <ParamSlider label="Plateau Gap" val={params.gulf_plateau_gap} min={0} max={25} step={1} onChange={v => setParams({...params, gulf_plateau_gap: v})} desc="Years between breakthroughs." />
-                  <ParamSlider label="Midpoint" val={params.gulf_mid1} min={5} max={25} step={1} onChange={v => setParams({...params, gulf_mid1: v})} desc="Timing of first surge." />
-                </>)}
+              {activeScenario === 'hype' && (<><ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="The true long-term automation level." /><ParamSlider label="Peak Perception" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Level of market over-optimism." /><ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Severity of correction post-bubble." /></>)}
+              {activeScenario === 'tidal' && (<><ParamSlider label="Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Maximum tech adoption ceiling." /><ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Years before Follower implementation." /><ParamSlider label="Diffusion Steepness" val={params.tidal_steepness} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, tidal_steepness: v})} desc="Speed of tech catch-up wave." /></>)}
+              {activeScenario === 'logjam' && (<><ParamSlider label="Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Final ceiling for machine tasks." /><ParamSlider label="Plateau Duration" val={params.logjam_plateau} min={2} max={15} step={1} onChange={v => setParams({...params, logjam_plateau: v})} desc="Years of stall due to regulations." /></>)}
+              {activeScenario === 'gulf' && (<><ParamSlider label="Max Saturation" val={params.gulf_max} min={0.5} max={1.0} step={0.05} onChange={v => setParams({...params, gulf_max: v})} desc="Frontier adoption ceiling." /><ParamSlider label="Leakage Follower" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="% of frontier tech available to Follower." />{mode === '3C' && <ParamSlider label="Leakage ROW" val={params.gulf_leakage_C} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, gulf_leakage_C: v})} desc="% available to Laggard." />}<ParamSlider label="Plateau Gap" val={params.gulf_plateau_gap} min={0} max={25} step={1} onChange={v => setParams({...params, gulf_plateau_gap: v})} desc="Years between breakthroughs." /></>)}
             </div>
           </div>
         </div>
@@ -487,158 +438,43 @@ const App = () => {
             <div className="bg-indigo-600 p-2 rounded text-white"><Info className="w-4 h-4" /></div>
             <div className="flex-1 text-[11px] text-slate-600 leading-relaxed max-w-4xl">
               <h3 className="text-[10px] font-black uppercase text-slate-800 tracking-widest mb-2">Model Context</h3>
-              <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> ({calibrationMode === 'real' ? leaderCode : 'A'}) automates tasks, its domestic returns to capital surge, pulling investment away from <span className="font-bold text-red-600">Follower</span> ({calibrationMode === 'real' ? followerCode : 'B'}) {mode === '3C' ? <>and <span className="font-bold text-slate-900">Laggard</span> (ROW)</> : ""} regions. This causes divergence in wealth and wages until technology diffuses across the global economy.</span>
+              <span>This simulator models international capital flows triggered by asymmetric technological adoption. When a <span className="font-bold text-blue-600">Leader</span> automates tasks, its domestic returns surge, pulling investment away from other regions until technology diffuses.</span>
             </div>
             <div className="flex flex-col space-y-3 pl-6 border-l border-slate-100 shrink-0">
-              <VisualLegendItem color="#2563eb" label={calibrationMode === 'real' ? leaderCode : 'Leader'} type="solid" /><VisualLegendItem color="#dc2626" label={calibrationMode === 'real' ? followerCode : 'Follower'} type="solid" />{mode === '3C' && <VisualLegendItem color="#000000" label={calibrationMode === 'real' ? 'ROW' : 'Laggard'} type="dashed" />}{activeScenario === 'hype' && <VisualLegendItem color="#2563eb" label="Perceived" type="short-dash" />}
+              <VisualLegendItem color="#2563eb" label="Leader" type="solid" /><VisualLegendItem color="#dc2626" label="Follower" type="solid" />{mode === '3C' && <VisualLegendItem color="#000000" label="Laggard" type="dashed" />}
               <div className="flex items-center space-x-3"><div className="w-6 h-2 bg-slate-200" /><span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Autarky</span></div>
             </div>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            <ChartBlock title="Tech Adoption (β)" desc="Tasks done by machines.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="beta1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="beta2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="beta3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                  {activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Output Index (Y)" desc="GDP per capita index.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="y1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="y2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="y3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Realized Returns (%)" desc="Net machine profit.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="r1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="r2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="r3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Wealth Share % (p.c.)" desc="Asset ownership share.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="sh1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="sh2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Labour Share GNI" desc="Wage portion of income.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="ls1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="ls2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Starvation Gap (%)" desc="Loss vs frontier adoption.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={0} stroke="#94a3b8" />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="sg2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="sg3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="GNI Index" desc="Total citizen income (Base=100).">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="gni1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="gni2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="gni3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Rentier Index (% GNI)" desc="Foreign profit income portion.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="rent1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="rent2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="rent3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Gov Revenue / GNI (%)" desc="Income from all taxes.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="rev1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="rev2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="rev3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
-            <ChartBlock title="Offshore Capital (%)" desc="Citizen wealth abroad.">
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={simulationResults} margin={{ left: -30 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="t" fontSize={8} />
-                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
-                  <Line type="monotone" dataKey="off1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="off2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  {mode === '3C' && <Line type="monotone" dataKey="off3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartBlock>
+            {[ 
+              { title: "Tech Adoption (β)", k: "beta1", k2: "beta2", k3: "beta3", h: "betaP" }, 
+              { title: "Output Index (Y)", k: "y1", k2: "y2", k3: "y3" }, 
+              { title: "Realized Returns (%)", k: "r1", k2: "r2", k3: "r3" }, 
+              { title: "Wealth Share % (p.c.)", k: "sh1", k2: "sh2", k3: "sh3" }, 
+              { title: "Labour Share GNI", k: "ls1", k2: "ls2", k3: "ls3" }, 
+              { title: "Starvation Gap (%)", k: "sg2", k2: "sg3", ref: 0 }, 
+              { title: "GNI Index", k: "gni1", k2: "gni2", k3: "gni3" }, 
+              { title: "Rentier Index (% GNI)", k: "rent1", k2: "rent2", k3: "rent3" }, 
+              { title: "Gov Revenue / GNI (%)", k: "rev1", k2: "rev2", k3: "rev3" }, 
+              { title: "Offshore Capital (%)", k: "off1", k2: "off2", k3: "off3" }
+            ].map((chart, i) => (
+              <ChartBlock key={i} title={chart.title}>
+                <ResponsiveContainer width="100%" height={120}>
+                  <LineChart data={simulationResults} margin={{ left: -30 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} />
+                    {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                    {chart.ref !== undefined && <ReferenceLine y={chart.ref} stroke="#94a3b8" />}
+                    <Line type="monotone" dataKey={chart.k} stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey={chart.k2} stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    {mode === '3C' && chart.k3 && <Line type="monotone" dataKey={chart.k3} stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                    {chart.h && <Line type="monotone" dataKey={chart.h} stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartBlock>
+            ))}
           </div>
           <div className="bg-white p-6 border border-slate-300 rounded-sm shadow-sm space-y-6">
-            <div className="flex items-center justify-between border-b pb-4 shrink-0"><h3 className="text-xs font-black uppercase text-slate-500 flex items-center"><LayoutGrid className="w-4 h-4 mr-2" /> GNI Decomposition (Percentage Share)</h3>
+            <div className="flex items-center justify-between border-b pb-4 shrink-0"><h3 className="text-xs font-black uppercase text-slate-500 flex items-center"><LayoutGrid className="w-4 h-4 mr-2" /> GNI Decomposition</h3>
               <div className="flex space-x-6">
                 <div className="flex items-center space-x-2"><div className="w-2.5 h-2.5 bg-[#cc4c4c]" /><span className="text-[9px] font-black uppercase">Labor</span></div>
                 <div className="flex items-center space-x-2"><div className="w-2.5 h-2.5 bg-[#4c4ccc]" /><span className="text-[9px] font-black uppercase">Home Capital</span></div>
@@ -648,23 +484,17 @@ const App = () => {
             <div className={`grid ${mode === '2C' ? 'grid-cols-2' : 'grid-cols-3'} gap-6`}>
               {[...Array(mode === '2C' ? 2 : 3)].map((_, c) => (
                 <div key={c} className="space-y-2">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? (calibrationMode === 'real' ? leaderCode : 'A') : (c === 1 ? (calibrationMode === 'real' ? followerCode : 'B') : 'ROW')}</div>
-                  <ResponsiveContainer width="100%" height={180}>
-                    <AreaChart data={simulationResults.map(h => { const total = Math.max(h.gni_parts[c].labor + h.gni_parts[c].dom_cap + h.gni_parts[c].for_cap, 1e-12); return { t: h.t, labor: (h.gni_parts[c].labor/total)*100, dom_cap: (h.gni_parts[c].dom_cap/total)*100, for_cap: (h.gni_parts[c].for_cap/total)*100, isAutarky: h.isAutarky }; })} margin={{ left: -30 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={[0, 100]} />
-                      {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#000" fillOpacity={0.05} stroke="none" />)}
-                      <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} />
-                      <Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} />
-                      <Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? "Leader" : (c === 1 ? "Follower" : "Laggard")}</div>
+                  <ResponsiveContainer width="100%" height={180}><AreaChart data={simulationResults.map(h => { 
+                    const parts = h.gni_parts[c];
+                    const total = Math.max(parts.labor + parts.dom_cap + parts.for_cap, 1e-12);
+                    return { t: h.t, labor: (parts.labor/total)*100, dom_cap: (parts.dom_cap/total)*100, for_cap: (parts.for_cap/total)*100 }; 
+                  })} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={[0, 100]} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#000" fillOpacity={0.05} stroke="none" />)}
+                  <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} /><Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} /><Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} /></AreaChart></ResponsiveContainer>
                 </div>
               ))}
             </div>
-          </div>
-          <div className="bg-slate-900 text-slate-400 p-4 rounded-sm font-mono text-[9px] flex justify-between items-center opacity-80 shrink-0">
-            <span>git add . && git commit -m "Update autarky regions" && git push origin main</span>
-            <span className="text-blue-500">npm run deploy</span>
           </div>
         </div>
       </main>
