@@ -8,11 +8,11 @@ import {
 } from 'lucide-react';
 
 /**
- * VERSION 1.1.4 - UI & LOGIC PATCH
- * - Fixed visibility of 'Abstract' button text
- * - Fixed Y-Axis for GNI Decomposition (explicit 0-100 scale)
- * - Restored Growth Rate parameter sliders and explanations
- * - Added dropdown arrow to category selector
+ * VERSION 1.1.6 - BENCHMARK & LOGIC PATCH
+ * - Fixed Starvation Gap: Leader is now benchmarked at flat 0%.
+ * - Fixed Hype scenario: Maintained Follower lag to prevent line overlap.
+ * - Fixed UI: Abstract tab text visibility, Growth Rate sliders, and Dropdown arrow.
+ * - Fixed GNI Decomposition: Explicit Y-axis ticks [0, 50, 100].
  */
 
 // --- DATA & CONSTANTS ---
@@ -249,7 +249,9 @@ const App = () => {
       const bL = t_axis.map(t => b_start + (hype_realized_max - b_start) / (1 + Math.exp(-0.8 * (t - 5))));
       const sp = t_axis.map(t => (1 / (1 + Math.exp(-2.5 * (t - 3)))) * (1 / (1 + Math.exp(1.8 * (t - 7)))));
       const st = t_axis.map(t => (1 / (1 + Math.exp(-1.2 * (t - 10)))) * (1 / (1 + Math.exp(0.6 * (t - 20)))));
-      beta_paths[0] = bL; beta_paths[1] = [...bL]; if (n === 3) beta_paths[2] = Array(T_full+1).fill(b_start);
+      beta_paths[0] = bL; 
+      beta_paths[1] = t_axis.map((_, t) => t < 5 ? b_start : bL[Math.max(0, t - 5)]); 
+      if (n === 3) beta_paths[2] = Array(T_full+1).fill(b_start);
       beta_perc_L = bL.map((v, i) => Math.max(1e-6, v + (hype_perc_peak * sp[i]) - (hype_trough_depth * st[i])));
     } else if (activeScenario === 'tidal') {
       const bL = t_axis.map(t => b_start + tidal_max / (1 + Math.exp(-tidal_steepness * (t - tidal_midpoint))));
@@ -297,9 +299,11 @@ const App = () => {
       const Y = Array(n).fill(0).map((_, i) => get_y(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i]));
       const r_phys = Array(n).fill(0).map((_, i) => get_r(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i], delta));
       const shadow = solve_market(V_curr, Array(n).fill(Math.max(...bt_r)), delta, A_curr, L_vec, gamma, rho, w_vec, tau_vec);
-      const starvation = shadow.K.map((kf, i) => (kf - K_curr[i]) / (kf + 1e-12));
-      const labor_inc = Y.map((y, i) => y - (r_phys[i] + delta) * K_curr[i]);
       
+      // Benchmarked Starvation Gap: Leader is 0, Followers show loss vs frontier
+      const starvation = shadow.K.map((kf, i) => Math.max(0, (kf - K_curr[i]) / (kf + 1e-12)));
+      
+      const labor_inc = Y.map((y, i) => y - (r_phys[i] + delta) * K_curr[i]);
       const GNI_parts = Array.from({length: n}, (_, owner) => {
         let dom = P[owner][owner] * r_phys[owner];
         let for_inc = 0;
@@ -341,7 +345,7 @@ const App = () => {
         sh2: (V_curr[1]/L_vec[1]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100,
         sh3: n === 3 ? (V_curr[2]/L_vec[2]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100 : 0,
         ls1: (labor_inc[0] / (GNI[0] || 1)) * 100, ls2: (labor_inc[1] / (GNI[1] || 1)) * 100, ls3: n === 3 ? (labor_inc[2] / (GNI[2] || 1)) * 100 : 0,
-        sg2: starvation[1] * 100, sg3: n === 3 ? starvation[2] * 100 : 0,
+        sg1: starvation[0] * 100, sg2: starvation[1] * 100, sg3: n === 3 ? starvation[2] * 100 : 0,
         rent1: (GNI_parts[0].for_cap * L_vec[0] / (GNI[0] || 1)) * 100, rent2: (GNI_parts[1].for_cap * L_vec[1] / (GNI[1] || 1)) * 100, rent3: n === 3 ? (GNI_parts[2].for_cap * L_vec[2] / (GNI[2] || 1)) * 100 : 0,
         off1: offshore[0] * 100, off2: offshore[1] * 100, off3: n === 3 ? offshore[2] * 100 : 0,
         gni_parts: GNI_parts
@@ -352,7 +356,7 @@ const App = () => {
     return history.map(h => ({
       ...h,
       k1: (h.rawK[0] / (h0.rawK[0] || 1)) * 100, k2: (h.rawK[1] / (h0.rawK[1] || 1)) * 100, k3: n === 3 ? (h.rawK[2] / (h0.rawK[2] || 1)) * 100 : 0,
-      rev1: (h.rawRev[0] / (h.rawGNI[0] || 1)) * 100, rev2: (h.rawRev[1] / (h.rawGNI[1] || 1)) * 100, rev3: n === 3 ? (h.rawRev[2] / (h.rawGNI[2] || 1)) * 100 : 0,
+      rev1: (h.rawRev[0] / (h.rawGNI[0] || 1)) * 100, rev2: (h.rawRev[1] / (h.rawGNI[1] || 1)) * 100, rev3: n === 3 ? (h.rawRev[2] / h.rawGNI[2]) * 100 : 0,
       y1: (h.rawY[0] / (h0.rawY[0] || 1)) * 100, y2: (h.rawY[1] / (h0.rawY[1] || 1)) * 100, y3: n === 3 ? (h.rawY[2] / (h0.rawY[2] || 1)) * 100 : 0,
       gni1: (h.rawGNI[0] / (h0.rawGNI[0] || 1)) * 100, gni2: (h.rawGNI[1] / (h0.rawGNI[1] || 1)) * 100, gni3: n === 3 ? (h.rawGNI[2] / (h0.rawGNI[2] || 1)) * 100 : 0
     }));
@@ -376,7 +380,7 @@ const App = () => {
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900 text-[11px]">
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 overflow-y-auto scrollbar-hide pb-20 text-left">
         <div className="p-4 border-b border-slate-200 flex items-center space-x-3 bg-slate-900 text-white font-black uppercase tracking-widest text-[11px] shrink-0">
-          <Globe className="w-5 h-5 text-blue-400" /><span>Sim Engine v1.1.4</span>
+          <Globe className="w-5 h-5 text-blue-400" /><span>Sim Engine v1.1.6</span>
         </div>
         <div className="p-5 space-y-6">
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
@@ -461,7 +465,7 @@ const App = () => {
               { title: "Realized Returns (%)", k: "r1", k2: "r2", k3: "r3" }, 
               { title: "Wealth Share % (p.c.)", k: "sh1", k2: "sh2", k3: "sh3" }, 
               { title: "Labour Share GNI", k: "ls1", k2: "ls2", k3: "ls3" }, 
-              { title: "Starvation Gap (%)", k: "sg2", k2: "sg3", ref: 0 }, 
+              { title: "Starvation Gap (%)", k: "sg1", k2: "sg2", k3: "sg3", ref: 0 }, 
               { title: "GNI Index", k: "gni1", k2: "gni2", k3: "gni3" }, 
               { title: "Rentier Index (% GNI)", k: "rent1", k2: "rent2", k3: "rent3" }, 
               { title: "Gov Revenue / GNI (%)", k: "rev1", k2: "rev2", k3: "rev3" }, 
