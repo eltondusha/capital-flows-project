@@ -4,14 +4,15 @@ import {
   ReferenceLine, AreaChart, Area, ReferenceArea
 } from 'recharts';
 import {
-  Globe, Activity, TrendingUp, Zap, Info, LayoutGrid
+  Globe, Activity, TrendingUp, Zap, Info, LayoutGrid, ChevronDown
 } from 'lucide-react';
 
 /**
- * VERSION 1.1.3 - PRODUCTION STABLE
- * - Resolved Uncaught ReferenceError: GNI_init
- * - Fixed variable scoping in simulation loop
- * - Maintained 10% tax caps and autarky logic
+ * VERSION 1.1.4 - UI & LOGIC PATCH
+ * - Fixed visibility of 'Abstract' button text
+ * - Fixed Y-Axis for GNI Decomposition (explicit 0-100 scale)
+ * - Restored Growth Rate parameter sliders and explanations
+ * - Added dropdown arrow to category selector
  */
 
 // --- DATA & CONSTANTS ---
@@ -137,7 +138,7 @@ const ParamSlider = ({ label, val, min, max, step, onChange, icon, desc, disable
 );
 
 const ChartBlock = ({ title, children, desc }) => (
-  <div className="bg-white p-3 border border-slate-300 shadow-sm rounded-sm flex flex-col h-full overflow-hidden text-center">
+  <div className="bg-white p-3 border border-slate-300 shadow-sm rounded-sm flex flex-col h-full overflow-hidden text-center text-left">
     <div className="text-[8px] font-black text-slate-500 uppercase tracking-tighter mb-2 flex justify-between border-b border-slate-50 pb-1">{title}</div>
     <div className="flex-1 min-h-[100px]">{children}</div>
     {desc && <p className="mt-2 text-[7px] text-slate-400 font-bold uppercase border-t border-slate-50 pt-1 tracking-tight leading-tight">{desc}</p>}
@@ -375,11 +376,11 @@ const App = () => {
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900 text-[11px]">
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 overflow-y-auto scrollbar-hide pb-20 text-left">
         <div className="p-4 border-b border-slate-200 flex items-center space-x-3 bg-slate-900 text-white font-black uppercase tracking-widest text-[11px] shrink-0">
-          <Globe className="w-5 h-5 text-blue-400" /><span>Sim Engine v1.1.3</span>
+          <Globe className="w-5 h-5 text-blue-400" /><span>Sim Engine v1.1.4</span>
         </div>
         <div className="p-5 space-y-6">
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
-            <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-50'}`}>Abstract</button>
+            <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Abstract</button>
             <button onClick={() => setCalibrationMode('real')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'real' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}>Real-World</button>
           </div>
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
@@ -393,12 +394,15 @@ const App = () => {
               ))}</div>
           </div>
           <div className="space-y-3 pt-4 border-t border-slate-100">
-            <select value={activeParamCategory} onChange={(e) => setActiveParamCategory(e.target.value)} className="w-full p-2 text-xs font-black uppercase border border-slate-200 rounded-lg appearance-none bg-white pr-10 cursor-pointer shadow-sm">
-                <option value="temporal">Temporal Setup</option>
-                <option value="size">Size and Calibration</option>
-                <option value="frictions">Capital Controls</option>
-                <option value="growth">Growth Rates</option>
-            </select>
+            <div className="relative">
+              <select value={activeParamCategory} onChange={(e) => setActiveParamCategory(e.target.value)} className="w-full p-2 text-xs font-black uppercase border border-slate-200 rounded-lg appearance-none bg-white pr-10 cursor-pointer shadow-sm">
+                  <option value="temporal">Temporal Setup</option>
+                  <option value="size">Size and Calibration</option>
+                  <option value="frictions">Capital Controls</option>
+                  <option value="growth">Growth Rates</option>
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            </div>
             <div className="bg-slate-50 p-4 rounded-xl space-y-5 border border-slate-200 shadow-sm text-left">
               {activeParamCategory === 'temporal' && (<><ParamSlider label="Gestation Lag" val={params.l} min={1} max={10} step={1} onChange={v => setParams({...params, l: v})} desc="Years for capital to become productive." /><ParamSlider label="Sim Periods" val={params.periods} min={20} max={60} step={1} onChange={v => setParams({...params, periods: v})} /></>)}
               {activeParamCategory === 'size' && (<>
@@ -414,6 +418,11 @@ const App = () => {
                   <ParamSlider label="Resid. Tax Leader" val={params.tau1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau1: v})} desc="Tax on own residents' foreign profit." />
                   <ParamSlider label="Resid. Tax Follower" val={params.tau2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau2: v})} desc="Tax on own residents' foreign profit." />
                   {mode === '3C' && <ParamSlider label="Resid. Tax ROW" val={params.tau3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau3: v})} desc="Tax on own residents' foreign profit." />}
+                </>)}
+              {activeParamCategory === 'growth' && (<>
+                  <ParamSlider label="Growth Leader" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} desc="Leader benchmark productivity growth." />
+                  <ParamSlider label="Growth Follower" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} desc="Follower benchmark productivity growth." />
+                  {mode === '3C' && <ParamSlider label="Growth ROW" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} desc="Laggard benchmark productivity growth." />}
                 </>)}
             </div>
           </div>
@@ -474,7 +483,7 @@ const App = () => {
             ))}
           </div>
           <div className="bg-white p-6 border border-slate-300 rounded-sm shadow-sm space-y-6">
-            <div className="flex items-center justify-between border-b pb-4 shrink-0"><h3 className="text-xs font-black uppercase text-slate-500 flex items-center"><LayoutGrid className="w-4 h-4 mr-2" /> GNI Decomposition</h3>
+            <div className="flex items-center justify-between border-b pb-4 shrink-0 text-left"><h3 className="text-xs font-black uppercase text-slate-500 flex items-center"><LayoutGrid className="w-4 h-4 mr-2" /> GNI Decomposition</h3>
               <div className="flex space-x-6">
                 <div className="flex items-center space-x-2"><div className="w-2.5 h-2.5 bg-[#cc4c4c]" /><span className="text-[9px] font-black uppercase">Labor</span></div>
                 <div className="flex items-center space-x-2"><div className="w-2.5 h-2.5 bg-[#4c4ccc]" /><span className="text-[9px] font-black uppercase">Home Capital</span></div>
@@ -485,13 +494,21 @@ const App = () => {
               {[...Array(mode === '2C' ? 2 : 3)].map((_, c) => (
                 <div key={c} className="space-y-2">
                   <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? "Leader" : (c === 1 ? "Follower" : "Laggard")}</div>
-                  <ResponsiveContainer width="100%" height={180}><AreaChart data={simulationResults.map(h => { 
-                    const parts = h.gni_parts[c];
-                    const total = Math.max(parts.labor + parts.dom_cap + parts.for_cap, 1e-12);
-                    return { t: h.t, labor: (parts.labor/total)*100, dom_cap: (parts.dom_cap/total)*100, for_cap: (parts.for_cap/total)*100 }; 
-                  })} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={[0, 100]} />
-                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#000" fillOpacity={0.05} stroke="none" />)}
-                  <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} /><Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} /><Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} /></AreaChart></ResponsiveContainer>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <AreaChart data={simulationResults.map(h => { 
+                      const parts = h.gni_parts[c];
+                      const total = Math.max(parts.labor + parts.dom_cap + parts.for_cap, 1e-12);
+                      return { t: h.t, labor: (parts.labor/total)*100, dom_cap: (parts.dom_cap/total)*100, for_cap: (parts.for_cap/total)*100 }; 
+                    })} margin={{ left: -30 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis dataKey="t" hide />
+                      <YAxis fontSize={8} domain={[0, 100]} ticks={[0, 50, 100]} />
+                      {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#000" fillOpacity={0.05} stroke="none" />)}
+                      <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} />
+                      <Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} />
+                      <Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               ))}
             </div>
