@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, AreaChart, Area
+  ReferenceLine, AreaChart, Area, ReferenceArea
 } from 'recharts';
 import {
   Globe, Activity, TrendingUp, Layers, RefreshCw,
@@ -154,7 +154,7 @@ const formatYAxis = (tick) => {
 const CustomTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-white border border-slate-300 p-2 text-[9px] font-bold shadow-xl">
+      <div className="bg-white border border-slate-300 p-2 text-[9px] font-bold shadow-xl text-left">
         <div className="mb-1 text-slate-400 uppercase tracking-widest border-b pb-1">Period {label}</div>
         {payload.map((entry, i) => (
           <div key={i} className="flex justify-between space-x-4">
@@ -166,6 +166,22 @@ const CustomTooltip = ({ active, payload, label }) => {
     );
   }
   return null;
+};
+
+// Helper for Autarky Regions
+const getAutarkyBands = (data) => {
+  const bands = [];
+  let start = null;
+  data.forEach((d) => {
+    if (d.isAutarky && start === null) {
+      start = d.t;
+    } else if (!d.isAutarky && start !== null) {
+      bands.push({ x1: start, x2: d.t - 1 });
+      start = null;
+    }
+  });
+  if (start !== null) bands.push({ x1: start, x2: data[data.length - 1].t });
+  return bands;
 };
 
 // --- MAIN APP ---
@@ -241,8 +257,6 @@ const App = () => {
     const A0_B = findA0(final_y_ratio_B);
     const A0_vec = n === 2 ? [A0_A, A0_numeraire] : [A0_A, A0_B, A0_numeraire];
     const K_init_pc = A0_vec.map(a => bisect_root((k) => get_r(k, b_start, rho, gamma, a, 1.0, delta) - r_target, 0.01, 2000));
-    
-    // s_base_vec definition for foresight loop
     const s_base_vec = K_init_pc.map((ki, i) => (delta * ki) / Math.max(get_y(ki, b_start, rho, gamma, A0_vec[i], 1.0), 1e-12));
 
     const t_axis = Array.from({ length: T_full + 1 }, (_, i) => i);
@@ -287,6 +301,16 @@ const App = () => {
     for (let t = 0; t < T_sim; t++) {
       const K_curr = Array(n).fill(0).map((_, j) => P.reduce((sum, row) => sum + row[j], 0));
       const V_curr = P.map(row => row.reduce((a, b) => a + b, 0));
+      
+      // Determine if in autarky for shaded regions (all off-diagonal elements zero)
+      let autarkyCount = 0;
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          if (r !== c && Math.abs(P[r][c]) > 1e-8) autarkyCount++;
+        }
+      }
+      const isAutarky = autarkyCount === 0;
+
       const bt_r = beta_paths.map(p => p[t]);
       const A_curr = A0_vec.map((a0, i) => a0 * Math.pow(1 + [g1, g2, g3][i], t));
       const Y = Array(n).fill(0).map((_, i) => get_y(K_curr[i], bt_r[i], rho, gamma, A_curr[i], L_vec[i]));
@@ -319,7 +343,7 @@ const App = () => {
           const r_phys_f = future.K.map((kf, i) => get_r(kf, bt_f[i], rho, gamma, A_f[i], L_vec[i], delta));
           const s_new = s_base_vec.map((sb, owner) => {
             let total_inc = 0;
-            for (let loc = 0; loc < n; loc++) total_inc += future.P[owner][loc] * (owner === loc ? r_phys_f[loc] : r_phys_f[loc] - w_vec[loc] - tau_vec[owner]);
+            for (let loc = 0; loc < n; loc++) total_inc += future.P[owner][loc] * (owner === loc ? future.K[loc] > 0 ? get_r(future.K[loc], bt_f[loc], rho, gamma, A_f[loc], L_vec[loc], delta) : 0 : future.K[loc] > 0 ? get_r(future.K[loc], bt_f[loc], rho, gamma, A_f[loc], L_vec[loc], delta) - w_vec[loc] - tau_vec[owner] : 0);
             return sb + phi * (total_inc / Math.max(V_proj[owner], 1e-12) - r_target);
           });
           if (s_new.every((v, i) => Math.abs(v - s_guess[i]) < 1e-6)) break;
@@ -332,7 +356,7 @@ const App = () => {
       }
 
       history.push({
-        t, rawK: [...K_curr], rawRev: endPeriodRev, rawY: [...Y], rawGNI: [...GNI],
+        t, rawK: [...K_curr], rawRev: endPeriodRev, rawY: [...Y], rawGNI: [...GNI], isAutarky,
         beta1: bt_r[0], beta2: bt_r[1], beta3: n === 3 ? bt_r[2] : 0, betaP: activeScenario === 'hype' ? b_perc_ext[t] : null,
         r1: r_phys[0] * 100, r2: r_phys[1] * 100, r3: n === 3 ? r_phys[2] * 100 : 0,
         sh1: (V_curr[0]/L_vec[0]) / (V_curr.reduce((a,b,idx)=>a+(b/L_vec[idx]), 0) + 1e-12) * 100,
@@ -358,6 +382,9 @@ const App = () => {
     }));
   }, [mode, activeScenario, params, calibrationMode, leaderCode, followerCode]);
 
+  // Generate bands for charts
+  const autarkyBands = useMemo(() => getAutarkyBands(simulationResults), [simulationResults]);
+
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden font-sans text-slate-900 text-[11px]">
       <aside className="w-80 bg-white border-r border-slate-300 flex flex-col shadow-xl z-20 overflow-y-auto scrollbar-hide pb-20">
@@ -366,7 +393,7 @@ const App = () => {
         </div>
         <div className="p-5 space-y-6">
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
-            <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>Abstract</button>
+            <button onClick={() => setCalibrationMode('abstract')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'abstract' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-50'}`}>Abstract</button>
             <button onClick={() => setCalibrationMode('real')} className={`py-1.5 text-[9px] font-black uppercase rounded-md transition-all ${calibrationMode === 'real' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}>Real-World</button>
           </div>
           <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg">
@@ -397,7 +424,7 @@ const App = () => {
                 <option value="growth">Growth Rates</option>
             </select>
             <div className="bg-slate-50 p-4 rounded-xl space-y-5 border border-slate-200 shadow-sm">
-              {activeParamCategory === 'temporal' && (<><ParamSlider label="Gestation Lag" val={params.l} min={1} max={10} step={1} onChange={v => setParams({...params, l: v})} desc="Years for capital to become productive." /><ParamSlider label="Sim Periods" val={params.periods} min={20} max={60} step={1} onChange={v => setParams({...params, periods: v})} desc="Visual simulation horizon." /></>)}
+              {activeParamCategory === 'temporal' && (<><ParamSlider label="Gestation Lag" val={params.l} min={1} max={10} step={1} onChange={v => setParams({...params, l: v})} desc="Years for capital to become productive." /><ParamSlider label="Sim Periods" val={params.periods} min={20} max={60} step={1} onChange={v => setParams({...params, periods: v})} /></>)}
               
               {activeParamCategory === 'size' && (<>
                   <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1">Output Ratios</div>
@@ -410,15 +437,15 @@ const App = () => {
 
               {activeParamCategory === 'frictions' && (<>
                   <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1">Source Taxes</div>
-                  <ParamSlider label="Source Tax Leader" val={params.w1} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, w1: v})} desc="Tax on foreign machinery inside the Leader." />
-                  <ParamSlider label="Source Tax Follower" val={params.w2} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, w2: v})} desc="Tax on foreign machinery inside the Follower." />
-                  {mode === '3C' && <ParamSlider label="Source Tax ROW" val={params.w3} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, w3: v})} desc="Tax on foreign machinery inside the ROW." />}
+                  <ParamSlider label="Source Tax Leader" val={params.w1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w1: v})} desc="Tax on foreign machinery inside the Leader." />
+                  <ParamSlider label="Source Tax Follower" val={params.w2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w2: v})} desc="Tax on foreign machinery inside the Follower." />
+                  {mode === '3C' && <ParamSlider label="Source Tax ROW" val={params.w3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, w3: v})} desc="Tax on foreign machinery inside the ROW." />}
                   <div className="text-[8px] font-bold text-slate-400 uppercase tracking-tight mb-1 border-b border-slate-200 pb-1 mt-4">Residence Taxes</div>
-                  <ParamSlider label="Resid. Tax Leader" val={params.tau1} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, tau1: v})} desc="Tax on Leader citizens earning income abroad." />
-                  <ParamSlider label="Resid. Tax Follower" val={params.tau2} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, tau2: v})} desc="Tax on Follower citizens earning income abroad." />
-                  {mode === '3C' && <ParamSlider label="Resid. Tax ROW" val={params.tau3} min={0} max={0.02} step={0.001} onChange={v => setParams({...params, tau3: v})} desc="Tax on ROW citizens earning income abroad." />}</>)}
+                  <ParamSlider label="Resid. Tax Leader" val={params.tau1} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau1: v})} desc="Tax on Leader citizens earning income abroad." />
+                  <ParamSlider label="Resid. Tax Follower" val={params.tau2} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau2: v})} desc="Tax on Follower citizens earning income abroad." />
+                  {mode === '3C' && <ParamSlider label="Resid. Tax ROW" val={params.tau3} min={0} max={0.1} step={0.001} onChange={v => setParams({...params, tau3: v})} desc="Tax on ROW citizens earning income abroad." />}</>)}
               
-              {activeParamCategory === 'growth' && (<><ParamSlider label="Growth Leader" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} desc="Standard productivity growth for Leader." /><ParamSlider label="Growth Follower" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} desc="Standard productivity growth for Follower." />{mode === '3C' && <ParamSlider label="Growth ROW" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} desc="Standard productivity growth for ROW." />}</>)}
+              {activeParamCategory === 'growth' && (<><ParamSlider label="Growth Leader" val={params.g1} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g1: v})} /><ParamSlider label="Growth Follower" val={params.g2} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g2: v})} />{mode === '3C' && <ParamSlider label="Growth ROW" val={params.g3} min={0} max={0.05} step={0.001} onChange={v => setParams({...params, g3: v})} />}</>)}
             </div>
           </div>
 
@@ -426,25 +453,25 @@ const App = () => {
             <div className="bg-amber-50/60 p-4 rounded-2xl border border-amber-100/80 shadow-inner space-y-4">
               <div className="flex items-center space-x-2.5 pb-2 border-b border-amber-100"><Zap className="w-4 h-4 text-amber-500" /><span className="text-[10px] font-black uppercase text-slate-500">Scenario Logic</span></div>
               {activeScenario === 'hype' && (<>
-                  <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="The long-term percentage of tasks machines eventually master." />
-                  <ParamSlider label="Peak Perception" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Level of market over-optimism before the crash." />
-                  <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="The severity of the market correction post-bubble." />
+                  <ParamSlider label="Realized Max" val={params.hype_realized_max} min={0.01} max={0.3} step={0.01} onChange={v => setParams({...params, hype_realized_max: v})} desc="The true long-term automation level." />
+                  <ParamSlider label="Peak Perception" val={params.hype_perc_peak} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, hype_perc_peak: v})} desc="Level of market over-optimism." />
+                  <ParamSlider label="Trough Depth" val={params.hype_trough_depth} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, hype_trough_depth: v})} desc="Severity of correction post-bubble." />
                 </>)}
               {activeScenario === 'tidal' && (<>
-                  <ParamSlider label="Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Maximum adoption ceiling for the technology wave." />
-                  <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Years before the Follower begins implementation." />
-                  <ParamSlider label="Diffusion Steepness" val={params.tidal_steepness} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, tidal_steepness: v})} desc="Speed of catch-up once diffusion begins." />
+                  <ParamSlider label="Saturation" val={params.tidal_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, tidal_max: v})} desc="Maximum tech adoption ceiling." />
+                  <ParamSlider label="Follower Lag" val={params.tidal_lag_B} min={0} max={20} step={1} onChange={v => setParams({...params, tidal_lag_B: v})} desc="Years before Follower catch-up." />
+                  <ParamSlider label="Diffusion Steepness" val={params.tidal_steepness} min={0.1} max={0.8} step={0.05} onChange={v => setParams({...params, tidal_steepness: v})} desc="Speed of adoption curve." />
                 </>)}
               {activeScenario === 'logjam' && (<>
-                  <ParamSlider label="Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="The long-term percentage of machine-performed tasks." />
-                  <ParamSlider label="Plateau Duration" val={params.logjam_plateau} min={2} max={15} step={1} onChange={v => setParams({...params, logjam_plateau: v})} desc="Years of stall due to regulations or bottlenecks." />
+                  <ParamSlider label="Saturation" val={params.logjam_max} min={0.1} max={0.9} step={0.05} onChange={v => setParams({...params, logjam_max: v})} desc="Final ceiling for machine tasks." />
+                  <ParamSlider label="Plateau Duration" val={params.logjam_plateau} min={2} max={15} step={1} onChange={v => setParams({...params, logjam_plateau: v})} desc="Years of bottlenecks/stall." />
                 </>)}
               {activeScenario === 'gulf' && (<>
                   <ParamSlider label="Max Saturation" val={params.gulf_max} min={0.5} max={1.0} step={0.05} onChange={v => setParams({...params, gulf_max: v})} desc="Leader's adoption ceiling." />
-                  <ParamSlider label="Leakage Follower" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Percentage of frontier tech available to Follower." />
-                  {mode === '3C' && <ParamSlider label="Leakage ROW" val={params.gulf_leakage_C} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, gulf_leakage_C: v})} desc="Percentage of frontier tech available to ROW." />}
-                  <ParamSlider label="Plateau Gap" val={params.gulf_plateau_gap} min={0} max={25} step={1} onChange={v => setParams({...params, gulf_plateau_gap: v})} desc="Years between technological breakthroughs." />
-                  <ParamSlider label="Midpoint" val={params.gulf_mid1} min={5} max={25} step={1} onChange={v => setParams({...params, gulf_mid1: v})} desc="Timing of the first major tech surge." />
+                  <ParamSlider label="Leakage Follower" val={params.gulf_leakage_B} min={0} max={0.5} step={0.01} onChange={v => setParams({...params, gulf_leakage_B: v})} desc="Follower access to tech." />
+                  {mode === '3C' && <ParamSlider label="Leakage ROW" val={params.gulf_leakage_C} min={0} max={0.2} step={0.01} onChange={v => setParams({...params, gulf_leakage_C: v})} desc="Laggard access to tech." />}
+                  <ParamSlider label="Plateau Gap" val={params.gulf_plateau_gap} min={0} max={25} step={1} onChange={v => setParams({...params, gulf_plateau_gap: v})} desc="Years between breakthroughs." />
+                  <ParamSlider label="Midpoint" val={params.gulf_mid1} min={5} max={25} step={1} onChange={v => setParams({...params, gulf_mid1: v})} desc="Timing of first surge." />
                 </>)}
             </div>
           </div>
@@ -456,7 +483,7 @@ const App = () => {
           <div className="flex items-center space-x-2 px-3 py-1 bg-blue-50 text-blue-700 rounded-full border border-blue-100"><Activity className="w-3 h-3" /><span className="text-[9px] font-black uppercase">{mode} DYNAMICS</span></div>
         </header>
         <div className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
-          <div className="bg-white border border-slate-300 p-5 rounded-sm shadow-sm flex items-start space-x-4 shrink-0">
+          <div className="bg-white border border-slate-300 p-5 rounded-sm shadow-sm flex items-start space-x-4 shrink-0 text-left">
             <div className="bg-indigo-600 p-2 rounded text-white"><Info className="w-4 h-4" /></div>
             <div className="flex-1 text-[11px] text-slate-600 leading-relaxed max-w-4xl">
               <h3 className="text-[10px] font-black uppercase text-slate-800 tracking-widest mb-2">Model Context</h3>
@@ -464,19 +491,151 @@ const App = () => {
             </div>
             <div className="flex flex-col space-y-3 pl-6 border-l border-slate-100 shrink-0">
               <VisualLegendItem color="#2563eb" label={calibrationMode === 'real' ? leaderCode : 'Leader'} type="solid" /><VisualLegendItem color="#dc2626" label={calibrationMode === 'real' ? followerCode : 'Follower'} type="solid" />{mode === '3C' && <VisualLegendItem color="#000000" label={calibrationMode === 'real' ? 'ROW' : 'Laggard'} type="dashed" />}{activeScenario === 'hype' && <VisualLegendItem color="#2563eb" label="Perceived" type="short-dash" />}
+              <div className="flex items-center space-x-3"><div className="w-6 h-2 bg-slate-200" /><span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Autarky</span></div>
             </div>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            <ChartBlock title="Tech Adoption (β)" desc="Tasks done by machines."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="beta1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="beta2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="beta3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}{activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Output Index (Y)" desc="GDP per capita index."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="y1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="y2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="y3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Realized Returns (%)" desc="Net machine profit."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="r1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="r2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="r3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Wealth Share % (p.c.)" desc="Asset ownership share."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="sh1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="sh2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Labour Share GNI" desc="Wage portion of income."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="ls1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="ls2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Starvation Gap (%)" desc="Loss vs frontier adoption."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><ReferenceLine y={0} stroke="#94a3b8" /><Line type="monotone" dataKey="sg2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="sg3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="GNI Index" desc="Total citizen income (Base=100)."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="gni1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="gni2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="gni3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Rentier Index (% GNI)" desc="Foreign profit income portion."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="rent1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="rent2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="rent3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Gov Revenue / GNI (%)" desc="Income from all taxes."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="rev1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="rev2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="rev3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
-            <ChartBlock title="Offshore Capital (%)" desc="Citizen wealth abroad."><ResponsiveContainer width="100%" height={120}><LineChart data={simulationResults} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" fontSize={8} /><YAxis fontSize={8} tickFormatter={formatYAxis} /><Tooltip content={<CustomTooltip />} /><Line type="monotone" dataKey="off1" stroke="#2563eb" strokeWidth={2} dot={false} /><Line type="monotone" dataKey="off2" stroke="#dc2626" strokeWidth={2} dot={false} />{mode === '3C' && <Line type="monotone" dataKey="off3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} />}</LineChart></ResponsiveContainer></ChartBlock>
+            <ChartBlock title="Tech Adoption (β)" desc="Tasks done by machines.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="beta1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="beta2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="beta3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                  {activeScenario === 'hype' && <Line type="monotone" dataKey="betaP" stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Output Index (Y)" desc="GDP per capita index.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="y1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="y2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="y3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Realized Returns (%)" desc="Net machine profit.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="r1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="r2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="r3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Wealth Share % (p.c.)" desc="Asset ownership share.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="sh1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="sh2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="sh3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Labour Share GNI" desc="Wage portion of income.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="ls1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="ls2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="ls3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Starvation Gap (%)" desc="Loss vs frontier adoption.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <ReferenceLine y={0} stroke="#94a3b8" />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="sg2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="sg3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="GNI Index" desc="Total citizen income (Base=100).">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="gni1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="gni2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="gni3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Rentier Index (% GNI)" desc="Foreign profit income portion.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="rent1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="rent2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="rent3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Gov Revenue / GNI (%)" desc="Income from all taxes.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="rev1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="rev2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="rev3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
+            <ChartBlock title="Offshore Capital (%)" desc="Citizen wealth abroad.">
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={simulationResults} margin={{ left: -30 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="t" fontSize={8} />
+                  <YAxis fontSize={8} tickFormatter={formatYAxis} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#94a3b8" fillOpacity={0.1} stroke="none" />)}
+                  <Line type="monotone" dataKey="off1" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="off2" stroke="#dc2626" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  {mode === '3C' && <Line type="monotone" dataKey="off3" stroke="#000000" strokeWidth={2} strokeDasharray="5 5" dot={false} isAnimationActive={false} />}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartBlock>
           </div>
           <div className="bg-white p-6 border border-slate-300 rounded-sm shadow-sm space-y-6">
             <div className="flex items-center justify-between border-b pb-4 shrink-0"><h3 className="text-xs font-black uppercase text-slate-500 flex items-center"><LayoutGrid className="w-4 h-4 mr-2" /> GNI Decomposition (Percentage Share)</h3>
@@ -490,13 +649,21 @@ const App = () => {
               {[...Array(mode === '2C' ? 2 : 3)].map((_, c) => (
                 <div key={c} className="space-y-2">
                   <div className="text-[10px] font-bold text-slate-400 uppercase text-center">{c === 0 ? (calibrationMode === 'real' ? leaderCode : 'A') : (c === 1 ? (calibrationMode === 'real' ? followerCode : 'B') : 'ROW')}</div>
-                  <ResponsiveContainer width="100%" height={180}><AreaChart data={simulationResults.map(h => { const total = Math.max(h.gni_parts[c].labor + h.gni_parts[c].dom_cap + h.gni_parts[c].for_cap, 1e-12); return { t: h.t, labor: (h.gni_parts[c].labor/total)*100, dom_cap: (h.gni_parts[c].dom_cap/total)*100, for_cap: (h.gni_parts[c].for_cap/total)*100 }; })} margin={{ left: -30 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={[0, 100]} /><Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} /><Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} /><Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} /></AreaChart></ResponsiveContainer>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <AreaChart data={simulationResults.map(h => { const total = Math.max(h.gni_parts[c].labor + h.gni_parts[c].dom_cap + h.gni_parts[c].for_cap, 1e-12); return { t: h.t, labor: (h.gni_parts[c].labor/total)*100, dom_cap: (h.gni_parts[c].dom_cap/total)*100, for_cap: (h.gni_parts[c].for_cap/total)*100, isAutarky: h.isAutarky }; })} margin={{ left: -30 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" /><XAxis dataKey="t" hide /><YAxis fontSize={8} domain={[0, 100]} />
+                      {autarkyBands.map((b, idx) => <ReferenceArea key={idx} x1={b.x1} x2={b.x2} fill="#000" fillOpacity={0.05} stroke="none" />)}
+                      <Area type="monotone" dataKey="labor" stackId="1" stroke="#cc4c4c" fill="#cc4c4c" isAnimationActive={false} />
+                      <Area type="monotone" dataKey="dom_cap" stackId="1" stroke="#4c4ccc" fill="#4c4ccc" isAnimationActive={false} />
+                      <Area type="monotone" dataKey="for_cap" stackId="1" stroke="#4ccc4c" fill="#4ccc4c" isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               ))}
             </div>
           </div>
           <div className="bg-slate-900 text-slate-400 p-4 rounded-sm font-mono text-[9px] flex justify-between items-center opacity-80 shrink-0">
-            <span>git add . && git commit -m "Update" && git push origin main</span>
+            <span>git add . && git commit -m "Update autarky regions" && git push origin main</span>
             <span className="text-blue-500">npm run deploy</span>
           </div>
         </div>
